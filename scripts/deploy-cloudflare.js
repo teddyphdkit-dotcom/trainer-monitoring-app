@@ -63,7 +63,7 @@ function ensureD1Database() {
   return found.uuid;
 }
 
-function main() {
+async function main() {
   run('node scripts/build-cloudflare.js');
   if (fs.existsSync(path.join(ROOT, 'cloudflare', 'live-snapshot.json'))) {
     run('node scripts/generate-d1-seed.js');
@@ -80,7 +80,41 @@ function main() {
   }
 
   console.log('\n[4/4] Men-deploy aplikasi ke Cloudflare Workers...');
+  await ensureWorkersSubdomain();
   run('npx wrangler deploy');
+}
+
+async function ensureWorkersSubdomain() {
+  try {
+    const cfgPath = path.join(process.env.APPDATA || '', 'xdg.config', '.wrangler', 'config', 'default.toml');
+    if (!fs.existsSync(cfgPath)) return;
+    const cfg = fs.readFileSync(cfgPath, 'utf8');
+    const m = /oauth_token\s*=\s*"([^"]+)"/.exec(cfg);
+    if (!m) return;
+    const token = m[1];
+    const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+    const accRes = await fetch('https://api.cloudflare.com/client/v4/accounts', { headers }).then((r) => r.json());
+    const accountId = accRes && accRes.result && accRes.result[0] && accRes.result[0].id;
+    if (!accountId) return;
+
+    const getSub = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/subdomain`, { headers }).then((r) => r.json());
+    if (!getSub || !getSub.result || !getSub.result.subdomain) {
+      const candidates = ['trainer-monitoring', 'trainer-monitoring-id', 'teddyphdkit', 'trainer-monitoring-kit', 'teddy-trainer-kit'];
+      for (const sub of candidates) {
+        const putRes = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/subdomain`, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({ subdomain: sub })
+        }).then((r) => r.json());
+        if (putRes && putRes.success) {
+          console.log(`Subdomain workers.dev terdaftar: ${sub}.workers.dev`);
+          break;
+        }
+      }
+    } else {
+      console.log(`Subdomain workers.dev aktif: ${getSub.result.subdomain}.workers.dev`);
+    }
+  } catch (_) {}
 }
 
 main();

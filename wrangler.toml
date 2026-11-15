@@ -9,7 +9,7 @@ crons = ["0 17 * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "trainer-monitoring-db"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "2154f580-cf54-43ea-b81d-d4cd44d74f7b"
 
 [vars]
 GAS_BRIDGE_URL = "https://script.google.com/macros/s/AKfycbyV5lj714EFILXUR2SwpyaYIdAz5KAkrlPSZkjqQf6o8CYeb5KKKMJJ6b9HdP7oZEA/exec"
