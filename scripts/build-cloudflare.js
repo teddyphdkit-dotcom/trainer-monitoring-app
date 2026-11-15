@@ -95,6 +95,13 @@ function buildD1SchemaSql() {
     '  "Trashed" INTEGER NOT NULL DEFAULT 0,',
     '  "CreatedAt" TEXT NOT NULL DEFAULT \'\'',
     ');',
+    '',
+    'CREATE TABLE IF NOT EXISTS "tm_sys_file_chunks" (',
+    '  "FileID" TEXT NOT NULL,',
+    '  "ChunkIndex" INTEGER NOT NULL,',
+    '  "ChunkData" TEXT NOT NULL DEFAULT \'\',',
+    '  PRIMARY KEY ("FileID", "ChunkIndex")',
+    ');',
     ''
   ];
 
@@ -201,7 +208,8 @@ async function ensureD1Schema(db) {
   const stmts = [
     db.prepare('CREATE TABLE IF NOT EXISTS "tm_sys_properties" ("PropKey" TEXT PRIMARY KEY, "PropValue" TEXT NOT NULL DEFAULT \\'\\')'),
     db.prepare('CREATE TABLE IF NOT EXISTS "tm_sys_folders" ("FolderID" TEXT PRIMARY KEY, "FolderName" TEXT NOT NULL DEFAULT \\'\\', "ParentID" TEXT NOT NULL DEFAULT \\'\\', "Access" TEXT NOT NULL DEFAULT \\'PRIVATE\\', "Permission" TEXT NOT NULL DEFAULT \\'NONE\\')'),
-    db.prepare('CREATE TABLE IF NOT EXISTS "tm_sys_files" ("FileID" TEXT PRIMARY KEY, "FolderID" TEXT NOT NULL DEFAULT \\'\\', "FileName" TEXT NOT NULL DEFAULT \\'\\', "MimeType" TEXT NOT NULL DEFAULT \\'application/octet-stream\\', "Base64Data" TEXT NOT NULL DEFAULT \\'\\', "Trashed" INTEGER NOT NULL DEFAULT 0, "CreatedAt" TEXT NOT NULL DEFAULT \\'\\')')
+    db.prepare('CREATE TABLE IF NOT EXISTS "tm_sys_files" ("FileID" TEXT PRIMARY KEY, "FolderID" TEXT NOT NULL DEFAULT \\'\\', "FileName" TEXT NOT NULL DEFAULT \\'\\', "MimeType" TEXT NOT NULL DEFAULT \\'application/octet-stream\\', "Base64Data" TEXT NOT NULL DEFAULT \\'\\', "Trashed" INTEGER NOT NULL DEFAULT 0, "CreatedAt" TEXT NOT NULL DEFAULT \\'\\')'),
+    db.prepare('CREATE TABLE IF NOT EXISTS "tm_sys_file_chunks" ("FileID" TEXT NOT NULL, "ChunkIndex" INTEGER NOT NULL, "ChunkData" TEXT NOT NULL DEFAULT \\'\\', PRIMARY KEY ("FileID", "ChunkIndex"))')
   ];
   for (const sName of SHEET_NAMES) {
     const cols = SHEETS_SCHEMA[sName];
@@ -317,16 +325,22 @@ async function loadStateFromD1(db, fnName, args) {
       const slice = idList.slice(i, i + chunkSize);
       const placeholders = slice.map(() => '?').join(', ');
       fileQueries.push(
-        db.prepare(\`SELECT "FileID", "Base64Data" FROM "tm_sys_files" WHERE "FileID" IN (\${placeholders})\`).bind(...slice)
+        db.prepare(\`SELECT "FileID", "ChunkIndex", "ChunkData" FROM "tm_sys_file_chunks" WHERE "FileID" IN (\${placeholders}) ORDER BY "FileID" ASC, "ChunkIndex" ASC\`).bind(...slice)
       );
     }
     const fileRes = await db.batch(fileQueries);
+    const chunksByFile = new Map();
     for (const batchItem of fileRes) {
       for (const row of (batchItem.results || [])) {
-        const fObj = driveFiles.get(String(row.FileID));
-        if (fObj) {
-          fObj.base64Data = String(row.Base64Data || '');
-        }
+        const fid = String(row.FileID);
+        if (!chunksByFile.has(fid)) chunksByFile.set(fid, []);
+        chunksByFile.get(fid).push(String(row.ChunkData || ''));
+      }
+    }
+    for (const [fid, parts] of chunksByFile.entries()) {
+      const fObj = driveFiles.get(fid);
+      if (fObj) {
+        fObj.base64Data = parts.join('');
       }
     }
   }
@@ -369,8 +383,18 @@ async function commitStateToD1(db, state) {
     if (fl) {
       stmts.push(
         db.prepare('INSERT OR REPLACE INTO "tm_sys_files" ("FileID", "FolderID", "FileName", "MimeType", "Base64Data", "Trashed", "CreatedAt") VALUES (?, ?, ?, ?, ?, ?, ?)')
-          .bind(fl.id, fl.folderId || '', fl.name || '', fl.mimeType || 'application/octet-stream', fl.base64Data || '', fl.trashed ? 1 : 0, fl.createdAt || new Date().toISOString())
+          .bind(fl.id, fl.folderId || '', fl.name || '', fl.mimeType || 'application/octet-stream', '', fl.trashed ? 1 : 0, fl.createdAt || new Date().toISOString())
       );
+      stmts.push(db.prepare('DELETE FROM "tm_sys_file_chunks" WHERE "FileID" = ?').bind(fl.id));
+      const b64 = String(fl.base64Data || '');
+      const CHUNK_LEN = 50000;
+      let cIdx = 0;
+      for (let pos = 0; pos < b64.length; pos += CHUNK_LEN) {
+        stmts.push(
+          db.prepare('INSERT INTO "tm_sys_file_chunks" ("FileID", "ChunkIndex", "ChunkData") VALUES (?, ?, ?)')
+            .bind(fl.id, cIdx++, b64.slice(pos, pos + CHUNK_LEN))
+        );
+      }
     }
   }
 
@@ -715,7 +739,8 @@ async function importSnapshotIntoD1(db, snapshot) {
   await ensureD1Schema(db);
   const stmts = [
     db.prepare('DELETE FROM "tm_sys_properties"'),
-    db.prepare('DELETE FROM "tm_sys_files"')
+    db.prepare('DELETE FROM "tm_sys_files"'),
+    db.prepare('DELETE FROM "tm_sys_file_chunks"')
   ];
 
   const props = snapshot.properties || {};
@@ -753,21 +778,35 @@ async function importSnapshotIntoD1(db, snapshot) {
   // Eksekusi batch tabel utama terlebih dahulu
   await db.batch(stmts);
 
-  // Masukkan file satu per satu agar ukuran payload per batch aman untuk foto base64
+  // Masukkan file dalam potongan 50 KB per baris agar selalu di bawah batas 100 KB per statement Cloudflare D1
   const files = Array.isArray(snapshot.files) ? snapshot.files : [];
+  const fileStmts = [];
+  const CHUNK_LEN = 50000;
   for (const f of files) {
-    await db
-      .prepare('INSERT OR REPLACE INTO "tm_sys_files" ("FileID", "FolderID", "FileName", "MimeType", "Base64Data", "Trashed", "CreatedAt") VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .bind(
-        String(f.FileID || ''),
-        String(f.FolderID || ''),
-        String(f.FileName || ''),
-        String(f.MimeType || 'image/jpeg'),
-        String(f.Base64Data || ''),
-        f.Trashed ? 1 : 0,
-        String(f.CreatedAt || new Date().toISOString())
-      )
-      .run();
+    const fid = String(f.FileID || '');
+    fileStmts.push(
+      db.prepare('INSERT OR REPLACE INTO "tm_sys_files" ("FileID", "FolderID", "FileName", "MimeType", "Base64Data", "Trashed", "CreatedAt") VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .bind(
+          fid,
+          String(f.FolderID || ''),
+          String(f.FileName || ''),
+          String(f.MimeType || 'image/jpeg'),
+          '',
+          f.Trashed ? 1 : 0,
+          String(f.CreatedAt || new Date().toISOString())
+        )
+    );
+    const b64 = String(f.Base64Data || '');
+    let cIdx = 0;
+    for (let pos = 0; pos < b64.length; pos += CHUNK_LEN) {
+      fileStmts.push(
+        db.prepare('INSERT INTO "tm_sys_file_chunks" ("FileID", "ChunkIndex", "ChunkData") VALUES (?, ?, ?)')
+          .bind(fid, cIdx++, b64.slice(pos, pos + CHUNK_LEN))
+      );
+    }
+  }
+  if (fileStmts.length > 0) {
+    await db.batch(fileStmts);
   }
 
   ISOLATE_CACHE.clear();

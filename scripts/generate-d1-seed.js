@@ -30,6 +30,7 @@ const lines = [
   '',
   'DELETE FROM "tm_sys_properties";',
   'DELETE FROM "tm_sys_files";',
+  'DELETE FROM "tm_sys_file_chunks";',
   ''
 ];
 
@@ -51,12 +52,21 @@ for (const [sheetName, headers] of Object.entries(TM_CONFIG.SHEETS)) {
   lines.push('');
 }
 
+const CHUNK_LEN = 50000;
 for (const f of (snapshot.files || [])) {
   lines.push(
     `INSERT OR REPLACE INTO "tm_sys_files" ("FileID", "FolderID", "FileName", "MimeType", "Base64Data", "Trashed", "CreatedAt") VALUES (` +
-      `${sqlStr(f.FileID)}, ${sqlStr(f.FolderID)}, ${sqlStr(f.FileName)}, ${sqlStr(f.MimeType)}, ${sqlStr(f.Base64Data)}, ${f.Trashed ? 1 : 0}, ${sqlStr(f.CreatedAt)}` +
+      `${sqlStr(f.FileID)}, ${sqlStr(f.FolderID)}, ${sqlStr(f.FileName)}, ${sqlStr(f.MimeType)}, '', ${f.Trashed ? 1 : 0}, ${sqlStr(f.CreatedAt)}` +
     `);`
   );
+  const b64 = String(f.Base64Data || '');
+  let cIdx = 0;
+  for (let pos = 0; pos < b64.length; pos += CHUNK_LEN) {
+    const slice = b64.slice(pos, pos + CHUNK_LEN);
+    lines.push(
+      `INSERT INTO "tm_sys_file_chunks" ("FileID", "ChunkIndex", "ChunkData") VALUES (${sqlStr(f.FileID)}, ${cIdx++}, ${sqlStr(slice)});`
+    );
+  }
 }
 
 fs.writeFileSync(OUT_SQL_PATH, lines.join('\n'), 'utf8');

@@ -25,6 +25,13 @@ CREATE TABLE IF NOT EXISTS "tm_sys_files" (
   "CreatedAt" TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS "tm_sys_file_chunks" (
+  "FileID" TEXT NOT NULL,
+  "ChunkIndex" INTEGER NOT NULL,
+  "ChunkData" TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY ("FileID", "ChunkIndex")
+);
+
 CREATE TABLE IF NOT EXISTS "Users" (
   "_row_order" INTEGER PRIMARY KEY AUTOINCREMENT,
   "UserID" TEXT NOT NULL DEFAULT '',
