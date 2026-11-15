@@ -231,8 +231,10 @@
 
           body.querySelectorAll('[data-retry-email]').forEach(function (btn) {
             btn.addEventListener('click', function () {
+              if (btn.disabled) return;
               var id = btn.getAttribute('data-retry-email');
               btn.disabled = true;
+              btn.innerHTML = '<span class="spinner"></span> Mengirim Ulang...';
               window.TM_API.callRpc('api_retryFailedEmailLog', window.TM_API.getToken(), id)
                 .then(function (r) {
                   if (r.status === 'Berhasil') {
@@ -245,6 +247,7 @@
                 .catch(function (err) {
                   window.TM_APP.showToast(err.message, 'error');
                   btn.disabled = false;
+                  btn.textContent = 'Coba Kirim Ulang';
                 });
             });
           });

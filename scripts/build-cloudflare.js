@@ -285,7 +285,7 @@ async function loadStateFromD1(db, fnName, args) {
     }
   }
 
-  if (fnName === 'api_getPhotoDataUrl' && args && args[1]) {
+  if ((fnName === 'api_getPhotoData' || fnName === 'api_getPhotoDataUrl') && args && args[1]) {
     const targetPhotoId = String(args[1]);
     const photosMatrix = sheetsRows.get('Photos') || [];
     for (let r = 1; r < photosMatrix.length; r++) {
@@ -305,6 +305,7 @@ async function loadStateFromD1(db, fnName, args) {
       }
     }
   } else if (
+    fnName === 'api_retryFailedEmailLog' ||
     fnName === 'api_generateDashboardReportPdf' ||
     fnName === 'api_createManualBackup' ||
     fnName === 'api_runDailyAutomatedBackup' ||

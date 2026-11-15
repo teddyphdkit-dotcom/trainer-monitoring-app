@@ -99,10 +99,47 @@
               '<div><h4 style="margin:0 0 6px;">Riwayat Versi PDF</h4>' + versionsHtml + '</div>';
 
             var genBtn = document.getElementById('btn-gen-session-pdf');
+            var sendBtn = document.getElementById('btn-send-pdf-email');
+            var resendBtn = document.getElementById('btn-resend-pdf-email');
+            var emailInput = document.getElementById('pdf-email-to');
+            var alertBox = document.getElementById('pdf-modal-alert');
+
+            function setModalActionBusy(isBusy, activeMode) {
+              if (genBtn) genBtn.disabled = isBusy;
+              if (sendBtn) sendBtn.disabled = isBusy;
+              if (resendBtn) resendBtn.disabled = isBusy;
+              if (emailInput) emailInput.disabled = isBusy;
+
+              if (!isBusy) {
+                if (genBtn) genBtn.innerHTML = '📄 Generate &amp; Unduh PDF A4';
+                if (sendBtn) sendBtn.innerHTML = '✉️ Kirim Email PDF';
+                if (resendBtn) resendBtn.innerHTML = 'Kirim Ulang';
+                return;
+              }
+
+              if (activeMode === 'GEN_PDF' && genBtn) {
+                genBtn.innerHTML = '<span class="spinner"></span> Menyusun PDF A4...';
+              } else if (activeMode === 'SEND_EMAIL' && sendBtn) {
+                sendBtn.innerHTML = '<span class="spinner"></span> Mengirim Email...';
+              } else if (activeMode === 'RESEND_EMAIL' && resendBtn) {
+                resendBtn.innerHTML = '<span class="spinner spinner-dark"></span> Mengirim Ulang...';
+              }
+            }
+
             if (genBtn) {
               genBtn.addEventListener('click', function () {
-                genBtn.disabled = true;
-                genBtn.textContent = 'Membuat PDF...';
+                if (genBtn.disabled) return;
+                setModalActionBusy(true, 'GEN_PDF');
+                if (alertBox) {
+                  alertBox.innerHTML =
+                    '<div class="alert alert-info" style="display:flex;align-items:center;gap:10px;">' +
+                      '<span class="spinner spinner-dark" style="flex-shrink:0;"></span>' +
+                      '<div>' +
+                        '<strong>Sedang menyusun dokumen PDF A4...</strong>' +
+                        '<div style="font-size:12px;opacity:0.9;">Mohon tunggu sebentar, sistem sedang merender laporan &amp; foto bukti.</div>' +
+                      '</div>' +
+                    '</div>';
+                }
                 window.TM_API.callRpc('api_generateSessionPdf', window.TM_API.getToken(), sessionId)
                   .then(function (res) {
                     downloadBase64File(res.base64Data, res.mimeType, res.fileName);
@@ -110,18 +147,33 @@
                     loadModalContent();
                   })
                   .catch(function (err) {
+                    if (alertBox) alertBox.innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
                     window.TM_APP.showToast(err.message, 'error');
-                    genBtn.disabled = false;
-                    genBtn.textContent = '📄 Generate & Unduh PDF A4';
+                    setModalActionBusy(false);
                   });
               });
             }
 
             function triggerSendEmail(isResend) {
-              var emailInput = document.getElementById('pdf-email-to');
-              var emailVal = emailInput ? emailInput.value : '';
-              var alertBox = document.getElementById('pdf-modal-alert');
-              if (alertBox) alertBox.innerHTML = '';
+              if ((sendBtn && sendBtn.disabled) || (resendBtn && resendBtn.disabled)) return;
+              var emailVal = emailInput ? emailInput.value.trim() : '';
+              if (!emailVal) {
+                if (alertBox) alertBox.innerHTML = '<div class="alert alert-error">Alamat email penerima wajib diisi.</div>';
+                if (emailInput) emailInput.focus();
+                return;
+              }
+
+              setModalActionBusy(true, isResend ? 'RESEND_EMAIL' : 'SEND_EMAIL');
+              if (alertBox) {
+                alertBox.innerHTML =
+                  '<div class="alert alert-info" style="display:flex;align-items:center;gap:10px;">' +
+                    '<span class="spinner spinner-dark" style="flex-shrink:0;"></span>' +
+                    '<div>' +
+                      '<strong>Sedang memproses &amp; mengirim email PDF...</strong>' +
+                      '<div style="font-size:12px;opacity:0.9;">Menyusun lampiran PDF A4 dan mengirimkannya ke <strong>' + esc(emailVal) + '</strong>. Mohon tunggu sebentar dan jangan klik berulang.</div>' +
+                    '</div>' +
+                  '</div>';
+              }
 
               window.TM_API.callRpc('api_sendSessionPdfEmail', window.TM_API.getToken(), sessionId, emailVal, isResend)
                 .then(function (res) {
@@ -133,14 +185,13 @@
                   loadModalContent();
                 })
                 .catch(function (err) {
+                  setModalActionBusy(false);
                   if (alertBox) alertBox.innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
                   else window.TM_APP.showToast(err.message, 'error');
                 });
             }
 
-            var sendBtn = document.getElementById('btn-send-pdf-email');
             if (sendBtn) sendBtn.addEventListener('click', function () { triggerSendEmail(false); });
-            var resendBtn = document.getElementById('btn-resend-pdf-email');
             if (resendBtn) resendBtn.addEventListener('click', function () { triggerSendEmail(true); });
           })
           .catch(function (err) {
@@ -156,6 +207,7 @@
      */
     function openDashboardExportModal(currentFilters) {
       var html =
+        '<div id="exp-modal-status"></div>' +
         '<p class="form-hint" style="margin-top:0;">Seluruh ekspor mengikuti filter aktif pada Dashboard dan mengecualikan Draft maupun data yang telah dihapus.</p>' +
         '<div class="card" style="margin-bottom:12px;">' +
           '<h4 style="margin:0 0 8px;">1. Laporan PDF (A4)</h4>' +
@@ -181,30 +233,66 @@
 
       window.TM_APP.openModal('Ekspor Laporan & Data Dashboard', html);
       var root = document.getElementById('modal-root');
+      var statusBox = document.getElementById('exp-modal-status');
+      var allExpBtns = root.querySelectorAll('[data-exp-pdf], [data-exp-data]');
+
+      function lockExportButtons(activeBtn, isPdf, labelText) {
+        allExpBtns.forEach(function (b) {
+          if (!b.hasAttribute('data-orig-html')) {
+            b.setAttribute('data-orig-html', b.innerHTML);
+          }
+          b.disabled = true;
+        });
+        if (activeBtn) {
+          activeBtn.innerHTML = '<span class="spinner' + (isPdf ? '' : ' spinner-dark') + '"></span> Memproses...';
+        }
+        if (statusBox) {
+          statusBox.innerHTML =
+            '<div class="alert alert-info" style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">' +
+              '<span class="spinner spinner-dark" style="flex-shrink:0;"></span>' +
+              '<div><strong>Sedang menyiapkan ' + esc(labelText) + '...</strong><div style="font-size:12px;opacity:0.9;">Mohon tunggu sebentar, file akan terunduh secara otomatis setelah selesai.</div></div>' +
+            '</div>';
+        }
+      }
+
+      function unlockExportButtons(clearStatus) {
+        allExpBtns.forEach(function (b) {
+          b.disabled = false;
+          if (b.hasAttribute('data-orig-html')) {
+            b.innerHTML = b.getAttribute('data-orig-html');
+          }
+        });
+        if (clearStatus && statusBox) {
+          statusBox.innerHTML = '';
+        }
+      }
 
       root.querySelectorAll('[data-exp-pdf]').forEach(function (btn) {
         btn.addEventListener('click', function () {
+          if (btn.disabled) return;
           var rType = btn.getAttribute('data-exp-pdf');
-          btn.disabled = true;
+          lockExportButtons(btn, true, 'Laporan PDF (' + rType + ')');
           window.TM_API.callRpc('api_generateDashboardReportPdf', window.TM_API.getToken(), rType, currentFilters || {})
             .then(function (res) {
               downloadBase64File(res.base64Data, res.mimeType, res.fileName);
               window.TM_APP.showToast('Laporan PDF ' + rType + ' berhasil diunduh.', 'success');
-              btn.disabled = false;
+              unlockExportButtons(true);
             })
             .catch(function (err) {
+              unlockExportButtons(false);
+              if (statusBox) statusBox.innerHTML = '<div class="alert alert-error" style="margin-bottom:12px;">' + esc(err.message) + '</div>';
               window.TM_APP.showToast(err.message, 'error');
-              btn.disabled = false;
             });
         });
       });
 
       root.querySelectorAll('[data-exp-data]').forEach(function (btn) {
         btn.addEventListener('click', function () {
+          if (btn.disabled) return;
           var parts = btn.getAttribute('data-exp-data').split(':');
           var fmt = parts[0];
           var mode = parts[1];
-          btn.disabled = true;
+          lockExportButtons(btn, false, 'File ' + fmt + ' (' + mode + ')');
           window.TM_API.callRpc('api_exportData', window.TM_API.getToken(), fmt, mode, currentFilters || {})
             .then(function (res) {
               if (res.format === 'EXCEL') {
@@ -218,11 +306,12 @@
                 });
                 window.TM_APP.showToast(res.files.length + ' file CSV (' + res.mode + ') berhasil diunduh.', 'success');
               }
-              btn.disabled = false;
+              unlockExportButtons(true);
             })
             .catch(function (err) {
+              unlockExportButtons(false);
+              if (statusBox) statusBox.innerHTML = '<div class="alert alert-error" style="margin-bottom:12px;">' + esc(err.message) + '</div>';
               window.TM_APP.showToast(err.message, 'error');
-              btn.disabled = false;
             });
         });
       });

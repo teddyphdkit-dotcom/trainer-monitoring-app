@@ -90,31 +90,64 @@
       var idx = Math.max(0, Math.min(startIndex || 0, photoItems.length - 1));
       var zoom = 1;
 
-      var html =
-        '<div id="lb-body">' +
-          '<div class="lightbox-img-wrap" id="lb-img-wrap"><span class="spinner"></span></div>' +
-          '<div id="lb-caption" style="margin-top:10px;font-size:13px;color:var(--text-secondary);"></div>' +
-          '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px;">' +
-            '<div style="display:flex;gap:6px;">' +
-              '<button type="button" class="btn btn-sm btn-secondary" id="lb-prev">← Prev</button>' +
-              '<button type="button" class="btn btn-sm btn-secondary" id="lb-next">Next →</button>' +
+      var existingLb = document.getElementById('tm-lightbox-backdrop');
+      if (existingLb && existingLb.parentNode) {
+        existingLb.parentNode.removeChild(existingLb);
+      }
+
+      var lbLayer = document.createElement('div');
+      lbLayer.className = 'modal-backdrop';
+      lbLayer.id = 'tm-lightbox-backdrop';
+      lbLayer.style.zIndex = '950';
+      lbLayer.innerHTML =
+        '<div class="modal-dialog" role="dialog" aria-modal="true">' +
+          '<div class="modal-header">' +
+            '<h3 class="modal-title">Galeri Foto Bukti</h3>' +
+            '<button type="button" class="btn btn-sm btn-ghost" id="lb-close-btn">✕</button>' +
+          '</div>' +
+          '<div id="lb-body">' +
+            '<div class="lightbox-img-wrap" id="lb-img-wrap">' +
+              '<div style="display:flex;flex-direction:column;align-items:center;gap:8px;padding:32px;color:var(--text-secondary);">' +
+                '<span class="spinner spinner-dark"></span>' +
+                '<span style="font-size:12.5px;">Memuat foto bukti...</span>' +
+              '</div>' +
             '</div>' +
-            '<div style="display:flex;gap:6px;">' +
-              '<button type="button" class="btn btn-sm btn-secondary" id="lb-zoom-out">−</button>' +
-              '<button type="button" class="btn btn-sm btn-secondary" id="lb-zoom-reset">100%</button>' +
-              '<button type="button" class="btn btn-sm btn-secondary" id="lb-zoom-in">+</button>' +
-              '<button type="button" class="btn btn-sm btn-primary" id="lb-download">Unduh</button>' +
+            '<div id="lb-caption" style="margin-top:10px;font-size:13px;color:var(--text-secondary);"></div>' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px;">' +
+              '<div style="display:flex;gap:6px;">' +
+                '<button type="button" class="btn btn-sm btn-secondary" id="lb-prev">← Prev</button>' +
+                '<button type="button" class="btn btn-sm btn-secondary" id="lb-next">Next →</button>' +
+              '</div>' +
+              '<div style="display:flex;gap:6px;">' +
+                '<button type="button" class="btn btn-sm btn-secondary" id="lb-zoom-out">−</button>' +
+                '<button type="button" class="btn btn-sm btn-secondary" id="lb-zoom-reset">100%</button>' +
+                '<button type="button" class="btn btn-sm btn-secondary" id="lb-zoom-in">+</button>' +
+                '<button type="button" class="btn btn-sm btn-primary" id="lb-download">Unduh</button>' +
+              '</div>' +
             '</div>' +
           '</div>' +
         '</div>';
 
-      window.TM_APP.openModal('Galeri Foto Bukti', html);
+      document.body.appendChild(lbLayer);
+
+      function closeLightbox() {
+        if (lbLayer && lbLayer.parentNode) {
+          lbLayer.parentNode.removeChild(lbLayer);
+        }
+      }
+
+      lbLayer.querySelector('#lb-close-btn').addEventListener('click', closeLightbox);
+      lbLayer.addEventListener('click', function (e) {
+        if (e.target === lbLayer) closeLightbox();
+      });
 
       function renderSlide() {
         zoom = 1;
         var item = photoItems[idx];
-        var wrap = document.getElementById('lb-img-wrap');
-        var cap = document.getElementById('lb-caption');
+        var wrap = lbLayer.querySelector('#lb-img-wrap');
+        var cap = lbLayer.querySelector('#lb-caption');
+        var zBtn = lbLayer.querySelector('#lb-zoom-reset');
+        if (zBtn) zBtn.textContent = '100%';
         if (!wrap || !cap) return;
         cap.textContent = '(' + (idx + 1) + '/' + photoItems.length + ') ' + (item.PhotoComment || item.comment || 'Tanpa komentar');
 
@@ -122,49 +155,58 @@
           var src = item.dataUrl || item.base64Data;
           wrap.innerHTML = '<img id="lb-img" src="' + esc(src) + '" alt="Foto Bukti">';
         } else {
-          wrap.innerHTML = '<span class="spinner"></span>';
+          wrap.innerHTML =
+            '<div style="display:flex;flex-direction:column;align-items:center;gap:8px;padding:32px;color:var(--text-secondary);">' +
+              '<span class="spinner spinner-dark"></span>' +
+              '<span style="font-size:12.5px;">Memuat foto bukti...</span>' +
+            '</div>';
           window.TM_API.callRpc('api_getPhotoData', window.TM_API.getToken(), item.PhotoID, false)
             .then(function (data) {
               item.dataUrl = data.dataUrl;
-              var curWrap = document.getElementById('lb-img-wrap');
+              var curWrap = lbLayer.querySelector('#lb-img-wrap');
               if (curWrap) curWrap.innerHTML = '<img id="lb-img" src="' + esc(data.dataUrl) + '" alt="Foto Bukti">';
             })
             .catch(function (err) {
-              var curWrap = document.getElementById('lb-img-wrap');
+              var curWrap = lbLayer.querySelector('#lb-img-wrap');
               if (curWrap) curWrap.innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
             });
         }
       }
 
       function applyZoom() {
-        var img = document.getElementById('lb-img');
+        var img = lbLayer.querySelector('#lb-img');
         if (img) img.style.transform = 'scale(' + zoom + ')';
-        var zBtn = document.getElementById('lb-zoom-reset');
+        var zBtn = lbLayer.querySelector('#lb-zoom-reset');
         if (zBtn) zBtn.textContent = Math.round(zoom * 100) + '%';
       }
 
-      document.getElementById('lb-prev').addEventListener('click', function () {
+      lbLayer.querySelector('#lb-prev').addEventListener('click', function () {
         idx = (idx - 1 + photoItems.length) % photoItems.length;
         renderSlide();
       });
-      document.getElementById('lb-next').addEventListener('click', function () {
+      lbLayer.querySelector('#lb-next').addEventListener('click', function () {
         idx = (idx + 1) % photoItems.length;
         renderSlide();
       });
-      document.getElementById('lb-zoom-in').addEventListener('click', function () {
+      lbLayer.querySelector('#lb-zoom-in').addEventListener('click', function () {
         zoom = Math.min(3, zoom + 0.25);
         applyZoom();
       });
-      document.getElementById('lb-zoom-out').addEventListener('click', function () {
+      lbLayer.querySelector('#lb-zoom-out').addEventListener('click', function () {
         zoom = Math.max(0.5, zoom - 0.25);
         applyZoom();
       });
-      document.getElementById('lb-zoom-reset').addEventListener('click', function () {
+      lbLayer.querySelector('#lb-zoom-reset').addEventListener('click', function () {
         zoom = 1;
         applyZoom();
       });
-      document.getElementById('lb-download').addEventListener('click', function () {
+      lbLayer.querySelector('#lb-download').addEventListener('click', function () {
+        var dlBtn = lbLayer.querySelector('#lb-download');
         var item = photoItems[idx];
+        if (dlBtn) {
+          dlBtn.disabled = true;
+          dlBtn.innerHTML = '<span class="spinner"></span> Mengunduh...';
+        }
         var dlPromise = item.PhotoID
           ? window.TM_API.callRpc('api_getPhotoData', window.TM_API.getToken(), item.PhotoID, true)
           : Promise.resolve({ dataUrl: item.dataUrl || item.base64Data, FileName: item.FileName || 'foto-bukti.jpg' });
@@ -178,6 +220,11 @@
           document.body.removeChild(a);
         }).catch(function (err) {
           window.TM_APP.showToast(err.message, 'error');
+        }).finally(function () {
+          if (dlBtn) {
+            dlBtn.disabled = false;
+            dlBtn.textContent = 'Unduh';
+          }
         });
       });
 
