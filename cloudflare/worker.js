@@ -50,9 +50,9 @@ function utf8ToBytes(str) {
 async function ensureD1Schema(db) {
   if (SCHEMA_INITIALIZED) return;
   const stmts = [
-    db.prepare('CREATE TABLE IF NOT EXISTS "_cf_properties" ("PropKey" TEXT PRIMARY KEY, "PropValue" TEXT NOT NULL DEFAULT \'\')'),
-    db.prepare('CREATE TABLE IF NOT EXISTS "_cf_folders" ("FolderID" TEXT PRIMARY KEY, "FolderName" TEXT NOT NULL DEFAULT \'\', "ParentID" TEXT NOT NULL DEFAULT \'\', "Access" TEXT NOT NULL DEFAULT \'PRIVATE\', "Permission" TEXT NOT NULL DEFAULT \'NONE\')'),
-    db.prepare('CREATE TABLE IF NOT EXISTS "_cf_files" ("FileID" TEXT PRIMARY KEY, "FolderID" TEXT NOT NULL DEFAULT \'\', "FileName" TEXT NOT NULL DEFAULT \'\', "MimeType" TEXT NOT NULL DEFAULT \'application/octet-stream\', "Base64Data" TEXT NOT NULL DEFAULT \'\', "Trashed" INTEGER NOT NULL DEFAULT 0, "CreatedAt" TEXT NOT NULL DEFAULT \'\')')
+    db.prepare('CREATE TABLE IF NOT EXISTS "tm_sys_properties" ("PropKey" TEXT PRIMARY KEY, "PropValue" TEXT NOT NULL DEFAULT \'\')'),
+    db.prepare('CREATE TABLE IF NOT EXISTS "tm_sys_folders" ("FolderID" TEXT PRIMARY KEY, "FolderName" TEXT NOT NULL DEFAULT \'\', "ParentID" TEXT NOT NULL DEFAULT \'\', "Access" TEXT NOT NULL DEFAULT \'PRIVATE\', "Permission" TEXT NOT NULL DEFAULT \'NONE\')'),
+    db.prepare('CREATE TABLE IF NOT EXISTS "tm_sys_files" ("FileID" TEXT PRIMARY KEY, "FolderID" TEXT NOT NULL DEFAULT \'\', "FileName" TEXT NOT NULL DEFAULT \'\', "MimeType" TEXT NOT NULL DEFAULT \'application/octet-stream\', "Base64Data" TEXT NOT NULL DEFAULT \'\', "Trashed" INTEGER NOT NULL DEFAULT 0, "CreatedAt" TEXT NOT NULL DEFAULT \'\')')
   ];
   for (const sName of SHEET_NAMES) {
     const cols = SHEETS_SCHEMA[sName];
@@ -67,9 +67,9 @@ async function loadStateFromD1(db, fnName, args) {
   await ensureD1Schema(db);
 
   const queries = [
-    db.prepare('SELECT "PropKey", "PropValue" FROM "_cf_properties"'),
-    db.prepare('SELECT "FolderID", "FolderName", "ParentID", "Access", "Permission" FROM "_cf_folders"'),
-    db.prepare('SELECT "FileID", "FolderID", "FileName", "MimeType", "Trashed", "CreatedAt" FROM "_cf_files"'),
+    db.prepare('SELECT "PropKey", "PropValue" FROM "tm_sys_properties"'),
+    db.prepare('SELECT "FolderID", "FolderName", "ParentID", "Access", "Permission" FROM "tm_sys_folders"'),
+    db.prepare('SELECT "FileID", "FolderID", "FileName", "MimeType", "Trashed", "CreatedAt" FROM "tm_sys_files"'),
     ...SHEET_NAMES.map((sName) => {
       const cols = SHEETS_SCHEMA[sName].map((c) => `"${c}"`).join(', ');
       return db.prepare(`SELECT ${cols} FROM "${sName}" ORDER BY "_row_order" ASC`);
@@ -168,7 +168,7 @@ async function loadStateFromD1(db, fnName, args) {
       const slice = idList.slice(i, i + chunkSize);
       const placeholders = slice.map(() => '?').join(', ');
       fileQueries.push(
-        db.prepare(`SELECT "FileID", "Base64Data" FROM "_cf_files" WHERE "FileID" IN (${placeholders})`).bind(...slice)
+        db.prepare(`SELECT "FileID", "Base64Data" FROM "tm_sys_files" WHERE "FileID" IN (${placeholders})`).bind(...slice)
       );
     }
     const fileRes = await db.batch(fileQueries);
@@ -201,7 +201,7 @@ async function commitStateToD1(db, state) {
   for (const k of state.dirtyProps) {
     const v = state.scriptProps.get(k) || '';
     stmts.push(
-      db.prepare('INSERT OR REPLACE INTO "_cf_properties" ("PropKey", "PropValue") VALUES (?, ?)').bind(k, v)
+      db.prepare('INSERT OR REPLACE INTO "tm_sys_properties" ("PropKey", "PropValue") VALUES (?, ?)').bind(k, v)
     );
   }
 
@@ -209,7 +209,7 @@ async function commitStateToD1(db, state) {
     const f = state.driveFolders.get(fid);
     if (f) {
       stmts.push(
-        db.prepare('INSERT OR REPLACE INTO "_cf_folders" ("FolderID", "FolderName", "ParentID", "Access", "Permission") VALUES (?, ?, ?, ?, ?)')
+        db.prepare('INSERT OR REPLACE INTO "tm_sys_folders" ("FolderID", "FolderName", "ParentID", "Access", "Permission") VALUES (?, ?, ?, ?, ?)')
           .bind(f.id, f.name, f.parentId || '', f.access || 'PRIVATE', f.permission || 'NONE')
       );
     }
@@ -219,7 +219,7 @@ async function commitStateToD1(db, state) {
     const fl = state.driveFiles.get(fileId);
     if (fl) {
       stmts.push(
-        db.prepare('INSERT OR REPLACE INTO "_cf_files" ("FileID", "FolderID", "FileName", "MimeType", "Base64Data", "Trashed", "CreatedAt") VALUES (?, ?, ?, ?, ?, ?, ?)')
+        db.prepare('INSERT OR REPLACE INTO "tm_sys_files" ("FileID", "FolderID", "FileName", "MimeType", "Base64Data", "Trashed", "CreatedAt") VALUES (?, ?, ?, ?, ?, ?, ?)')
           .bind(fl.id, fl.folderId || '', fl.name || '', fl.mimeType || 'application/octet-stream', fl.base64Data || '', fl.trashed ? 1 : 0, fl.createdAt || new Date().toISOString())
       );
     }
@@ -10418,14 +10418,14 @@ async function callGasBridge(env, payload) {
 async function importSnapshotIntoD1(db, snapshot) {
   await ensureD1Schema(db);
   const stmts = [
-    db.prepare('DELETE FROM "_cf_properties"'),
-    db.prepare('DELETE FROM "_cf_files"')
+    db.prepare('DELETE FROM "tm_sys_properties"'),
+    db.prepare('DELETE FROM "tm_sys_files"')
   ];
 
   const props = snapshot.properties || {};
   for (const [k, v] of Object.entries(props)) {
     stmts.push(
-      db.prepare('INSERT OR REPLACE INTO "_cf_properties" ("PropKey", "PropValue") VALUES (?, ?)').bind(String(k), String(v))
+      db.prepare('INSERT OR REPLACE INTO "tm_sys_properties" ("PropKey", "PropValue") VALUES (?, ?)').bind(String(k), String(v))
     );
   }
 
@@ -10461,7 +10461,7 @@ async function importSnapshotIntoD1(db, snapshot) {
   const files = Array.isArray(snapshot.files) ? snapshot.files : [];
   for (const f of files) {
     await db
-      .prepare('INSERT OR REPLACE INTO "_cf_files" ("FileID", "FolderID", "FileName", "MimeType", "Base64Data", "Trashed", "CreatedAt") VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .prepare('INSERT OR REPLACE INTO "tm_sys_files" ("FileID", "FolderID", "FileName", "MimeType", "Base64Data", "Trashed", "CreatedAt") VALUES (?, ?, ?, ?, ?, ?, ?)')
       .bind(
         String(f.FileID || ''),
         String(f.FolderID || ''),

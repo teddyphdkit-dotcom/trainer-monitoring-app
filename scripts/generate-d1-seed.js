@@ -28,14 +28,14 @@ const lines = [
   `-- Diekspor pada: ${snapshot.exportedAt || new Date().toISOString()}`,
   '-- ============================================================================',
   '',
-  'DELETE FROM "_cf_properties";',
-  'DELETE FROM "_cf_files";',
+  'DELETE FROM "tm_sys_properties";',
+  'DELETE FROM "tm_sys_files";',
   ''
 ];
 
 for (const [k, v] of Object.entries(snapshot.properties || {})) {
   lines.push(
-    `INSERT OR REPLACE INTO "_cf_properties" ("PropKey", "PropValue") VALUES (${sqlStr(k)}, ${sqlStr(v)});`
+    `INSERT OR REPLACE INTO "tm_sys_properties" ("PropKey", "PropValue") VALUES (${sqlStr(k)}, ${sqlStr(v)});`
   );
 }
 lines.push('');
@@ -53,7 +53,7 @@ for (const [sheetName, headers] of Object.entries(TM_CONFIG.SHEETS)) {
 
 for (const f of (snapshot.files || [])) {
   lines.push(
-    `INSERT OR REPLACE INTO "_cf_files" ("FileID", "FolderID", "FileName", "MimeType", "Base64Data", "Trashed", "CreatedAt") VALUES (` +
+    `INSERT OR REPLACE INTO "tm_sys_files" ("FileID", "FolderID", "FileName", "MimeType", "Base64Data", "Trashed", "CreatedAt") VALUES (` +
       `${sqlStr(f.FileID)}, ${sqlStr(f.FolderID)}, ${sqlStr(f.FileName)}, ${sqlStr(f.MimeType)}, ${sqlStr(f.Base64Data)}, ${f.Trashed ? 1 : 0}, ${sqlStr(f.CreatedAt)}` +
     `);`
   );

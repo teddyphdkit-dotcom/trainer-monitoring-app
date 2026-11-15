@@ -2,12 +2,12 @@
 -- Cloudflare D1 (SQLite) Schema untuk Trainer Monitoring App (20 Sheet + Storage)
 -- ============================================================================
 
-CREATE TABLE IF NOT EXISTS "_cf_properties" (
+CREATE TABLE IF NOT EXISTS "tm_sys_properties" (
   "PropKey" TEXT PRIMARY KEY,
   "PropValue" TEXT NOT NULL DEFAULT ''
 );
 
-CREATE TABLE IF NOT EXISTS "_cf_folders" (
+CREATE TABLE IF NOT EXISTS "tm_sys_folders" (
   "FolderID" TEXT PRIMARY KEY,
   "FolderName" TEXT NOT NULL DEFAULT '',
   "ParentID" TEXT NOT NULL DEFAULT '',
@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS "_cf_folders" (
   "Permission" TEXT NOT NULL DEFAULT 'NONE'
 );
 
-CREATE TABLE IF NOT EXISTS "_cf_files" (
+CREATE TABLE IF NOT EXISTS "tm_sys_files" (
   "FileID" TEXT PRIMARY KEY,
   "FolderID" TEXT NOT NULL DEFAULT '',
   "FileName" TEXT NOT NULL DEFAULT '',
