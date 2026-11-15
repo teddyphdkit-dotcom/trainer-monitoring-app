@@ -1,0 +1,662 @@
+<script>
+  window.TM_VIEWS_DASHBOARD = (function () {
+    var chartInstances = [];
+
+    function esc(s) {
+      return window.TM_APP.escapeHtml(s);
+    }
+
+    function destroyCharts() {
+      while (chartInstances.length > 0) {
+        var ch = chartInstances.pop();
+        try { ch.destroy(); } catch (e) {}
+      }
+    }
+
+    function renderDashboardView(container) {
+      var activeTab = 'OVERVIEW';
+      var filterOpen = true;
+      var filterOptions = null;
+      var dashData = null;
+
+      var filters = {
+        dateFrom: '',
+        dateTo: '',
+        outletIds: [],
+        trainerIds: [],
+        amIds: [],
+        mumIds: [],
+        categoryIds: [],
+        sectionIds: []
+      };
+
+      container.innerHTML =
+        '<div class="card dash-filter-card" style="margin-bottom:14px;overflow:visible;">' +
+          '<div class="card-header" style="margin-bottom:0;">' +
+            '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">' +
+              '<h2 class="card-title">Filter Global Dashboard</h2>' +
+              '<span class="badge badge-primary" id="db-active-filter-count">Semua Data</span>' +
+            '</div>' +
+            '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+              '<button type="button" class="btn btn-sm btn-primary" id="db-open-export">📥 Unduh Laporan &amp; Data</button>' +
+              '<button type="button" class="btn btn-sm btn-secondary" id="db-toggle-filter">Sembunyikan Filter ▴</button>' +
+              '<button type="button" class="btn btn-sm btn-ghost" id="db-reset-filter">Reset</button>' +
+            '</div>' +
+          '</div>' +
+          '<div id="db-filter-drawer" style="margin-top:16px;border-top:1px solid var(--border-color);padding-top:14px;"></div>' +
+        '</div>' +
+        '<div id="db-kpi-row"></div>' +
+        '<div class="tabs-bar" id="db-tabs">' +
+          '<button class="tab-btn active" data-dtab="OVERVIEW">1. Ringkasan</button>' +
+          '<button class="tab-btn" data-dtab="ANALISIS">2. Analisis Wilayah</button>' +
+          '<button class="tab-btn" data-dtab="TOP_ISSUE">3. Masalah Terbanyak</button>' +
+          '<button class="tab-btn" data-dtab="DETAIL">4. Rincian Pemeriksaan</button>' +
+        '</div>' +
+        '<div id="db-tab-body"><p class="form-hint">Memuat analitik Dashboard...</p></div>';
+
+      function countActiveFilters() {
+        var c = 0;
+        if (filters.dateFrom) c++;
+        if (filters.dateTo) c++;
+        c += filters.outletIds.length + filters.trainerIds.length + filters.amIds.length +
+             filters.mumIds.length + filters.categoryIds.length + filters.sectionIds.length;
+        return c;
+      }
+
+      function updateFilterCountBadge() {
+        var badge = document.getElementById('db-active-filter-count');
+        if (!badge) return;
+        var cnt = countActiveFilters();
+        badge.textContent = cnt === 0 ? 'Semua Data' : (cnt + ' Filter Dipilih');
+      }
+
+      function buildTriggerSummary(selectedArr, items, labelKey, defaultLabel) {
+        if (!selectedArr || selectedArr.length === 0) {
+          return { text: defaultLabel, count: 0 };
+        }
+        var names = [];
+        for (var i = 0; i < items.length; i++) {
+          if (selectedArr.indexOf(items[i].id) !== -1) {
+            names.push(items[i][labelKey] || items[i].name);
+          }
+        }
+        return {
+          text: names.join(', ') || (selectedArr.length + ' dipilih'),
+          count: selectedArr.length
+        };
+      }
+
+      function renderMultiSelectDropdown(groupKey, defaultLabel, items, labelKey) {
+        var list = items || [];
+        var selectedArr = filters[groupKey] || [];
+        var summary = buildTriggerSummary(selectedArr, list, labelKey, defaultLabel);
+
+        var optionsHtml = list.length === 0
+          ? '<div class="form-hint" style="padding:8px 10px;">Belum ada pilihan tersedia</div>'
+          : list.map(function (it) {
+              var isSel = selectedArr.indexOf(it.id) !== -1;
+              var text = it[labelKey] || it.name;
+              var subCode = it.code ? (' (' + it.code + ')') : '';
+              return (
+                '<div class="ms-option' + (isSel ? ' selected' : '') + '" data-ms-opt="' + groupKey + '" data-ms-id="' + esc(it.id) + '" data-ms-search="' + esc((text + subCode).toLowerCase()) + '">' +
+                  '<span class="ms-checkbox">✓</span>' +
+                  '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;">' + esc(text) + (subCode ? '<span class="form-hint">' + esc(subCode) + '</span>' : '') + '</span>' +
+                '</div>'
+              );
+            }).join('');
+
+        return (
+          '<div class="ms-dropdown" data-ms-wrap="' + groupKey + '" data-ms-default="' + esc(defaultLabel) + '">' +
+            '<button type="button" class="ms-trigger' + (summary.count > 0 ? ' has-selection' : '') + '" data-ms-trigger="' + groupKey + '">' +
+              '<span class="ms-trigger-text" data-ms-text="' + groupKey + '">' + esc(summary.text) + '</span>' +
+              '<span class="ms-trigger-right">' +
+                '<span class="ms-trigger-badge' + (summary.count > 0 ? '' : ' hidden') + '" data-ms-badge="' + groupKey + '">' + summary.count + ' dipilih</span>' +
+                '<span class="ms-chevron">▾</span>' +
+              '</span>' +
+            '</button>' +
+            '<div class="ms-menu">' +
+              '<div class="ms-actions">' +
+                '<div style="display:flex;gap:6px;">' +
+                  '<button type="button" class="ms-action-btn" data-ms-selectall="' + groupKey + '">Pilih Semua</button>' +
+                  '<button type="button" class="ms-action-btn" data-ms-clear="' + groupKey + '">Reset</button>' +
+                '</div>' +
+                '<button type="button" class="ms-action-btn" data-ms-close="' + groupKey + '">Selesai ✓</button>' +
+              '</div>' +
+              (list.length > 4
+                ? '<input type="text" class="ms-search" data-ms-filter="' + groupKey + '" placeholder="Cari pilihan...">'
+                : '') +
+              '<div class="ms-list">' + optionsHtml + '</div>' +
+            '</div>' +
+          '</div>'
+        );
+      }
+
+      function refreshDropdownTriggerUI(box, groupKey) {
+        var wrap = box.querySelector('[data-ms-wrap="' + groupKey + '"]');
+        if (!wrap) return;
+        var defaultLabel = wrap.getAttribute('data-ms-default') || 'Semua';
+        var groupMap = {
+          outletIds: filterOptions.outlets,
+          trainerIds: filterOptions.trainers,
+          categoryIds: filterOptions.categories,
+          sectionIds: filterOptions.sections,
+          amIds: filterOptions.ams,
+          mumIds: filterOptions.mums
+        };
+        var list = groupMap[groupKey] || [];
+        var summary = buildTriggerSummary(filters[groupKey], list, 'name', defaultLabel);
+        var trig = wrap.querySelector('[data-ms-trigger="' + groupKey + '"]');
+        var txt = wrap.querySelector('[data-ms-text="' + groupKey + '"]');
+        var bdg = wrap.querySelector('[data-ms-badge="' + groupKey + '"]');
+        if (trig) trig.classList.toggle('has-selection', summary.count > 0);
+        if (txt) txt.textContent = summary.text;
+        if (bdg) {
+          bdg.textContent = summary.count + ' dipilih';
+          bdg.classList.toggle('hidden', summary.count === 0);
+        }
+        updateFilterCountBadge();
+      }
+
+      function drawFilterDrawer() {
+        var box = document.getElementById('db-filter-drawer');
+        if (!box || !filterOptions) return;
+
+        box.innerHTML =
+          '<div class="grid-3">' +
+            '<div class="form-group">' +
+              '<label class="form-label">Dari Tanggal Pemeriksaan</label>' +
+              '<input type="date" id="dbf-from" class="form-control" value="' + esc(filters.dateFrom) + '">' +
+            '</div>' +
+            '<div class="form-group">' +
+              '<label class="form-label">Sampai Tanggal Pemeriksaan</label>' +
+              '<input type="date" id="dbf-to" class="form-control" value="' + esc(filters.dateTo) + '">' +
+            '</div>' +
+            '<div class="form-group">' +
+              '<label class="form-label">Outlet (Bisa Pilih &gt; 1)</label>' +
+              renderMultiSelectDropdown('outletIds', 'Semua Outlet', filterOptions.outlets, 'name') +
+            '</div>' +
+            '<div class="form-group">' +
+              '<label class="form-label">Trainer (Bisa Pilih &gt; 1)</label>' +
+              renderMultiSelectDropdown('trainerIds', 'Semua Trainer', filterOptions.trainers, 'name') +
+            '</div>' +
+            '<div class="form-group">' +
+              '<label class="form-label">Kategori Temuan (Bisa Pilih &gt; 1)</label>' +
+              renderMultiSelectDropdown('categoryIds', 'Semua Kategori', filterOptions.categories, 'name') +
+            '</div>' +
+            '<div class="form-group">' +
+              '<label class="form-label">Bagian / Section (Bisa Pilih &gt; 1)</label>' +
+              renderMultiSelectDropdown('sectionIds', 'Semua Bagian / Section', filterOptions.sections, 'name') +
+            '</div>' +
+            '<div class="form-group">' +
+              '<label class="form-label">Area Manager / AM (Bisa Pilih &gt; 1)</label>' +
+              renderMultiSelectDropdown('amIds', 'Semua AM', filterOptions.ams, 'name') +
+            '</div>' +
+            '<div class="form-group">' +
+              '<label class="form-label">MUM (Bisa Pilih &gt; 1)</label>' +
+              renderMultiSelectDropdown('mumIds', 'Semua MUM', filterOptions.mums, 'name') +
+            '</div>' +
+            '<div class="form-group" style="justify-content:flex-end;">' +
+              '<label class="form-label">&nbsp;</label>' +
+              '<button type="button" id="dbf-apply" class="btn btn-primary btn-block">Terapkan Filter</button>' +
+            '</div>' +
+          '</div>';
+
+        box.querySelectorAll('[data-ms-trigger]').forEach(function (trig) {
+          trig.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var grp = trig.getAttribute('data-ms-trigger');
+            var wrap = box.querySelector('[data-ms-wrap="' + grp + '"]');
+            var wasOpen = wrap && wrap.classList.contains('open');
+            box.querySelectorAll('.ms-dropdown.open').forEach(function (el) {
+              el.classList.remove('open');
+            });
+            if (wrap && !wasOpen) {
+              wrap.classList.add('open');
+            }
+          });
+        });
+
+        box.querySelectorAll('.ms-menu').forEach(function (menu) {
+          menu.addEventListener('click', function (e) {
+            e.stopPropagation();
+          });
+        });
+
+        box.querySelectorAll('[data-ms-close]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var grp = btn.getAttribute('data-ms-close');
+            var wrap = box.querySelector('[data-ms-wrap="' + grp + '"]');
+            if (wrap) wrap.classList.remove('open');
+          });
+        });
+
+        box.querySelectorAll('[data-ms-opt]').forEach(function (opt) {
+          opt.addEventListener('click', function () {
+            var grp = opt.getAttribute('data-ms-opt');
+            var id = opt.getAttribute('data-ms-id');
+            var arr = filters[grp];
+            var idx = arr.indexOf(id);
+            if (idx === -1) arr.push(id);
+            else arr.splice(idx, 1);
+            opt.classList.toggle('selected', idx === -1);
+            refreshDropdownTriggerUI(box, grp);
+          });
+        });
+
+        box.querySelectorAll('[data-ms-selectall]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var grp = btn.getAttribute('data-ms-selectall');
+            var wrap = box.querySelector('[data-ms-wrap="' + grp + '"]');
+            if (!wrap) return;
+            var allIds = [];
+            wrap.querySelectorAll('[data-ms-opt="' + grp + '"]').forEach(function (opt) {
+              if (opt.style.display !== 'none') {
+                var id = opt.getAttribute('data-ms-id');
+                if (allIds.indexOf(id) === -1) allIds.push(id);
+                opt.classList.add('selected');
+              }
+            });
+            filters[grp] = allIds;
+            refreshDropdownTriggerUI(box, grp);
+          });
+        });
+
+        box.querySelectorAll('[data-ms-clear]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var grp = btn.getAttribute('data-ms-clear');
+            var wrap = box.querySelector('[data-ms-wrap="' + grp + '"]');
+            filters[grp] = [];
+            if (wrap) {
+              wrap.querySelectorAll('[data-ms-opt="' + grp + '"]').forEach(function (opt) {
+                opt.classList.remove('selected');
+              });
+            }
+            refreshDropdownTriggerUI(box, grp);
+          });
+        });
+
+        box.querySelectorAll('[data-ms-filter]').forEach(function (inp) {
+          inp.addEventListener('input', function () {
+            var grp = inp.getAttribute('data-ms-filter');
+            var q = (inp.value || '').trim().toLowerCase();
+            var wrap = box.querySelector('[data-ms-wrap="' + grp + '"]');
+            if (!wrap) return;
+            wrap.querySelectorAll('[data-ms-opt="' + grp + '"]').forEach(function (opt) {
+              var hay = opt.getAttribute('data-ms-search') || '';
+              opt.style.display = (!q || hay.indexOf(q) !== -1) ? '' : 'none';
+            });
+          });
+        });
+
+        document.getElementById('dbf-apply').addEventListener('click', function () {
+          filters.dateFrom = document.getElementById('dbf-from').value;
+          filters.dateTo = document.getElementById('dbf-to').value;
+          box.querySelectorAll('.ms-dropdown.open').forEach(function (el) {
+            el.classList.remove('open');
+          });
+          updateFilterCountBadge();
+          fetchDashboardData();
+        });
+      }
+
+      document.addEventListener('click', function () {
+        var box = document.getElementById('db-filter-drawer');
+        if (!box) return;
+        box.querySelectorAll('.ms-dropdown.open').forEach(function (el) {
+          el.classList.remove('open');
+        });
+      });
+
+      function renderKpiCards() {
+        var box = document.getElementById('db-kpi-row');
+        if (!box || !dashData) return;
+        var k = dashData.kpi;
+        var hasRec = k.recurringIssuesCount > 0;
+        box.innerHTML =
+          '<div class="kpi-grid">' +
+            '<div class="kpi-card">' +
+              '<span class="kpi-label">Total Pemeriksaan</span>' +
+              '<div class="kpi-value">' + k.totalInspections + '</div>' +
+              '<span class="kpi-sub">Sesi selesai (tidak termasuk Draft)</span>' +
+            '</div>' +
+            '<div class="kpi-card">' +
+              '<span class="kpi-label">Total Temuan Aktif</span>' +
+              '<div class="kpi-value">' + k.totalActiveFindings + '</div>' +
+              '<span class="kpi-sub">Temuan operasional aktif</span>' +
+            '</div>' +
+            '<div class="kpi-card">' +
+              '<span class="kpi-label">Outlet Diperiksa</span>' +
+              '<div class="kpi-value">' + k.inspectedOutlets + '</div>' +
+              '<span class="kpi-sub">Outlet unik telah diperiksa</span>' +
+            '</div>' +
+            '<div class="kpi-card' + (hasRec ? ' kpi-recurring-alert' : '') + '">' +
+              '<div style="display:flex;justify-content:space-between;align-items:center;gap:6px;">' +
+                '<span class="kpi-label">Masalah Berulang</span>' +
+                (hasRec ? '<span class="badge badge-danger">Perlu perhatian khusus</span>' : '') +
+              '</div>' +
+              '<div class="kpi-value">' + k.recurringIssuesCount + '</div>' +
+              '<span class="kpi-sub">' + k.recurringAffectedOutletsCount + ' Outlet terdampak (≥ 2 sesi berbeda)</span>' +
+            '</div>' +
+          '</div>';
+      }
+
+      function renderActiveTab() {
+        destroyCharts();
+        var body = document.getElementById('db-tab-body');
+        if (!body || !dashData) return;
+
+        if (activeTab === 'OVERVIEW') renderOverviewTab(body);
+        else if (activeTab === 'ANALISIS') renderAnalisisTab(body);
+        else if (activeTab === 'TOP_ISSUE') renderTopIssueTab(body);
+        else if (activeTab === 'DETAIL') renderDetailTab(body);
+      }
+
+      function renderOverviewTab(body) {
+        var recHtml = dashData.recurringIssues.length === 0
+          ? '<p class="form-hint">Tidak ada masalah berulang pada rentang filter saat ini.</p>'
+          : dashData.recurringIssues.slice(0, 5).map(function (r) {
+              return (
+                '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border-color);gap:8px;flex-wrap:wrap;">' +
+                  '<div><strong>' + esc(r.outletName) + '</strong> • ' + esc(r.categoryName) + '<div class="form-hint">Ditemukan di ' + r.sessionCount + ' sesi pemeriksaan (' + r.findingCount + ' temuan)</div></div>' +
+                  '<span class="badge badge-danger">' + esc(r.label) + '</span>' +
+                '</div>'
+              );
+            }).join('');
+
+        body.innerHTML =
+          '<div class="grid-2">' +
+            '<div class="card">' +
+              '<div class="card-header"><h3 class="card-title">Tren Temuan Berdasarkan Tanggal Pemeriksaan</h3></div>' +
+              '<div class="chart-box"><canvas id="ch-trend"></canvas></div>' +
+            '</div>' +
+            '<div class="card">' +
+              '<div class="card-header"><h3 class="card-title">10 Kategori Temuan Terbanyak</h3></div>' +
+              '<div class="chart-box"><canvas id="ch-cat"></canvas></div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="card">' +
+            '<div class="card-header">' +
+              '<h3 class="card-title">Sorotan Masalah Berulang</h3>' +
+              '<span class="badge badge-danger">Perlu perhatian khusus</span>' +
+            '</div>' +
+            recHtml +
+          '</div>';
+
+        if (typeof Chart !== 'undefined') {
+          Chart.defaults.color = '#cbd5e1';
+          Chart.defaults.borderColor = 'rgba(255, 255, 255, 0.08)';
+          var tCtx = document.getElementById('ch-trend');
+          if (tCtx) {
+            chartInstances.push(new Chart(tCtx, {
+              type: 'line',
+              data: {
+                labels: dashData.trendByDate.map(function (x) { return x.date; }),
+                datasets: [
+                  {
+                    label: 'Jumlah Temuan',
+                    data: dashData.trendByDate.map(function (x) { return x.findingCount; }),
+                    borderColor: '#60a5fa',
+                    backgroundColor: 'rgba(59, 130, 246, 0.22)',
+                    fill: true,
+                    tension: 0.3
+                  },
+                  {
+                    label: 'Jumlah Sesi',
+                    data: dashData.trendByDate.map(function (x) { return x.sessionCount; }),
+                    borderColor: '#34d399',
+                    backgroundColor: 'transparent',
+                    tension: 0.3
+                  }
+                ]
+              },
+              options: { responsive: true, maintainAspectRatio: false }
+            }));
+          }
+
+          var cCtx = document.getElementById('ch-cat');
+          if (cCtx) {
+            chartInstances.push(new Chart(cCtx, {
+              type: 'bar',
+              data: {
+                labels: dashData.topCategories.map(function (x) { return x.categoryName; }),
+                datasets: [{
+                  label: 'Temuan Aktif',
+                  data: dashData.topCategories.map(function (x) { return x.findingCount; }),
+                  backgroundColor: '#3b82f6',
+                  borderRadius: 6
+                }]
+              },
+              options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false }
+            }));
+          }
+        }
+      }
+
+      function renderAnalisisTab(body) {
+        var amRows = dashData.analysisByAM.map(function (a) {
+          return '<tr><td><strong>' + esc(a.amName) + '</strong></td><td>' + a.outletCount + '</td><td>' + a.sessionCount + '</td><td><span class="badge badge-primary">' + a.findingCount + '</span></td></tr>';
+        }).join('');
+        var mumRows = dashData.analysisByMUM.map(function (m) {
+          return '<tr><td><strong>' + esc(m.mumName) + '</strong></td><td>' + m.outletCount + '</td><td>' + m.sessionCount + '</td><td><span class="badge badge-primary">' + m.findingCount + '</span></td></tr>';
+        }).join('');
+
+        var amCards = dashData.analysisByAM.map(function (a) {
+          return '<div class="mobile-item-card"><div class="mobile-item-row"><strong>' + esc(a.amName) + '</strong><span class="badge badge-primary">' + a.findingCount + ' temuan</span></div><div class="form-hint">' + a.outletCount + ' Outlet • ' + a.sessionCount + ' Pemeriksaan</div></div>';
+        }).join('');
+        var mumCards = dashData.analysisByMUM.map(function (m) {
+          return '<div class="mobile-item-card"><div class="mobile-item-row"><strong>' + esc(m.mumName) + '</strong><span class="badge badge-primary">' + m.findingCount + ' temuan</span></div><div class="form-hint">' + m.outletCount + ' Outlet • ' + m.sessionCount + ' Pemeriksaan</div></div>';
+        }).join('');
+
+        body.innerHTML =
+          '<div class="card">' +
+            '<div class="card-header"><h3 class="card-title">Bagian (Section) Berdasarkan Jumlah Temuan</h3></div>' +
+            '<div class="chart-box"><canvas id="ch-sec"></canvas></div>' +
+          '</div>' +
+          '<div class="grid-2">' +
+            '<div class="card">' +
+              '<div class="card-header"><h3 class="card-title">Analisis Berdasarkan Area Manager (AM)</h3></div>' +
+              '<div class="table-wrap"><table class="data-table"><thead><tr><th>AM</th><th>Outlet</th><th>Sesi</th><th>Temuan</th></tr></thead><tbody>' + (amRows || '<tr><td colspan="4">Tidak ada data</td></tr>') + '</tbody></table></div>' +
+              '<div class="mobile-card-list">' + (amCards || '<p class="form-hint">Tidak ada data</p>') + '</div>' +
+            '</div>' +
+            '<div class="card">' +
+              '<div class="card-header"><h3 class="card-title">Analisis Berdasarkan MUM</h3></div>' +
+              '<div class="table-wrap"><table class="data-table"><thead><tr><th>MUM</th><th>Outlet</th><th>Sesi</th><th>Temuan</th></tr></thead><tbody>' + (mumRows || '<tr><td colspan="4">Tidak ada data</td></tr>') + '</tbody></table></div>' +
+              '<div class="mobile-card-list">' + (mumCards || '<p class="form-hint">Tidak ada data</p>') + '</div>' +
+            '</div>' +
+          '</div>';
+
+        if (typeof Chart !== 'undefined') {
+          Chart.defaults.color = '#cbd5e1';
+          Chart.defaults.borderColor = 'rgba(255, 255, 255, 0.08)';
+          var sCtx = document.getElementById('ch-sec');
+          if (sCtx) {
+            chartInstances.push(new Chart(sCtx, {
+              type: 'bar',
+              data: {
+                labels: dashData.topSections.map(function (x) { return x.sectionName; }),
+                datasets: [{
+                  label: 'Jumlah Temuan',
+                  data: dashData.topSections.map(function (x) { return x.findingCount; }),
+                  backgroundColor: '#e11d48',
+                  borderRadius: 6
+                }]
+              },
+              options: { responsive: true, maintainAspectRatio: false }
+            }));
+          }
+        }
+      }
+
+      function renderTopIssueTab(body) {
+        var overallRows = dashData.overallTopIssues.map(function (it) {
+          return '<tr><td><strong>' + esc(it.categoryName) + '</strong></td><td>' + esc(it.sectionName) + '</td><td>' + it.outletCount + '</td><td>' + it.sessionCount + '</td><td><span class="badge badge-primary">' + it.findingCount + '</span></td></tr>';
+        }).join('');
+        var overallCards = dashData.overallTopIssues.map(function (it) {
+          return '<div class="mobile-item-card"><div class="mobile-item-row"><strong>' + esc(it.categoryName) + ' • ' + esc(it.sectionName) + '</strong><span class="badge badge-primary">' + it.findingCount + ' temuan</span></div><div class="form-hint">' + it.outletCount + ' Outlet • ' + it.sessionCount + ' Sesi</div></div>';
+        }).join('');
+
+        var outletRows = dashData.topIssuesByOutlet.map(function (o) {
+          return '<tr><td><code>' + esc(o.outletCode) + '</code> <strong>' + esc(o.outletName) + '</strong></td><td>' + o.sessionCount + '</td><td><span class="badge badge-primary">' + o.findingCount + '</span></td><td>' + esc(o.topCategory) + '</td><td>' + esc(o.topSection) + '</td></tr>';
+        }).join('');
+        var outletCards = dashData.topIssuesByOutlet.map(function (o) {
+          return '<div class="mobile-item-card"><div class="mobile-item-row"><strong>' + esc(o.outletName) + '</strong><span class="badge badge-primary">' + o.findingCount + ' temuan</span></div><div class="form-hint">Top Category: ' + esc(o.topCategory) + ' • Top Section: ' + esc(o.topSection) + '</div></div>';
+        }).join('');
+
+        var recRows = dashData.recurringIssues.map(function (r) {
+          return '<tr><td><code>' + esc(r.outletCode) + '</code> <strong>' + esc(r.outletName) + '</strong></td><td>' + esc(r.categoryName) + '</td><td><strong>' + r.sessionCount + ' sesi</strong></td><td>' + r.findingCount + '</td><td>' + esc(r.lastInspectionDate) + '</td><td><span class="badge badge-danger">' + esc(r.label) + '</span></td></tr>';
+        }).join('');
+        var recCards = dashData.recurringIssues.map(function (r) {
+          return '<div class="mobile-item-card" style="border-color:rgba(244,63,94,0.45);"><div class="mobile-item-row"><strong>' + esc(r.outletName) + ' • ' + esc(r.categoryName) + '</strong><span class="badge badge-danger">' + esc(r.label) + '</span></div><div class="form-hint">' + r.sessionCount + ' sesi unik • ' + r.findingCount + ' temuan • Terakhir: ' + esc(r.lastInspectionDate) + '</div></div>';
+        }).join('');
+
+        body.innerHTML =
+          '<div class="card">' +
+            '<div class="card-header"><h3 class="card-title">Masalah Berulang</h3><span class="badge badge-danger">Perlu perhatian khusus</span></div>' +
+            '<div class="table-wrap"><table class="data-table"><thead><tr><th>Outlet</th><th>Kategori</th><th>Sesi Unik</th><th>Total Temuan</th><th>Pemeriksaan Terakhir</th><th>Status</th></tr></thead><tbody>' + (recRows || '<tr><td colspan="6">Tidak ada masalah berulang</td></tr>') + '</tbody></table></div>' +
+            '<div class="mobile-card-list">' + (recCards || '<p class="form-hint">Tidak ada masalah berulang</p>') + '</div>' +
+          '</div>' +
+          '<div class="card">' +
+            '<div class="card-header"><h3 class="card-title">Ringkasan Masalah Terbanyak per Outlet</h3></div>' +
+            '<div class="table-wrap"><table class="data-table"><thead><tr><th>Outlet</th><th>Sesi</th><th>Temuan</th><th>Kategori Terbanyak</th><th>Bagian Terbanyak</th></tr></thead><tbody>' + (outletRows || '<tr><td colspan="5">Tidak ada data</td></tr>') + '</tbody></table></div>' +
+            '<div class="mobile-card-list">' + (outletCards || '<p class="form-hint">Tidak ada data</p>') + '</div>' +
+          '</div>' +
+          '<div class="card">' +
+            '<div class="card-header"><h3 class="card-title">Analisis Keseluruhan (Kategori &amp; Bagian)</h3></div>' +
+            '<div class="table-wrap"><table class="data-table"><thead><tr><th>Kategori</th><th>Bagian</th><th>Outlet</th><th>Sesi</th><th>Temuan</th></tr></thead><tbody>' + (overallRows || '<tr><td colspan="5">Tidak ada data</td></tr>') + '</tbody></table></div>' +
+            '<div class="mobile-card-list">' + (overallCards || '<p class="form-hint">Tidak ada data</p>') + '</div>' +
+          '</div>';
+      }
+
+      function renderDetailTab(body) {
+        var sessions = dashData.detailedSessions || [];
+        if (sessions.length === 0) {
+          body.innerHTML = '<div class="card"><p class="form-hint" style="margin:0;">Tidak ada sesi pemeriksaan yang cocok dengan filter aktif.</p></div>';
+          return;
+        }
+
+        body.innerHTML = sessions.map(function (s, sIdx) {
+          var findingsHtml = (s.Findings || []).length === 0
+            ? '<p class="form-hint" style="margin:6px 0 0;">Pemeriksaan selesai tanpa temuan.</p>'
+            : s.Findings.map(function (f, fIdx) {
+                var photoBtns = (f.Photos || []).map(function (ph, pIdx) {
+                  return (
+                    '<button type="button" class="btn btn-sm btn-secondary" data-dbphoto="' + sIdx + ':' + fIdx + ':' + pIdx + '">' +
+                      '📷 ' + esc(ph.FileName || ('Foto ' + (pIdx + 1))) +
+                      (ph.PhotoComment ? ' — ' + esc(ph.PhotoComment) : '') +
+                    '</button>'
+                  );
+                }).join(' ');
+
+                return (
+                  '<div class="card" style="background:var(--bg-app);margin-top:10px;margin-bottom:0;">' +
+                    '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:6px;">' +
+                      '<strong>' + esc(f.CategoryNameSnapshot) + ' → ' + esc(f.SectionNameSnapshot) + '</strong>' +
+                    '</div>' +
+                    '<div style="font-size:13px;"><strong>Masalah:</strong> ' + esc(f.Masalah) + '</div>' +
+                    '<div style="font-size:13px;"><strong>Mengapa:</strong> ' + esc(f.Mengapa) + '</div>' +
+                    (f.Solusi ? '<div style="font-size:13px;"><strong>Solusi:</strong> ' + esc(f.Solusi) + '</div>' : '') +
+                    '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">' + photoBtns + '</div>' +
+                  '</div>'
+                );
+              }).join('');
+
+          return (
+            '<div class="card">' +
+              '<div class="card-header" style="margin-bottom:8px;">' +
+                '<div>' +
+                  '<strong>' + esc(s.CanonicalOutletName) + '</strong> ' +
+                  '<span class="badge badge-neutral">' + esc(s.ReportNumber) + '</span>' +
+                  '<div class="form-hint">Tanggal Pemeriksaan: ' + esc(s.InspectionDate) + ' • Trainer: ' + esc(s.TrainerName) + ' • PIC: ' + esc(s.PIC_Name) + ' • AM: ' + esc(s.AM_Name_Snapshot) + ' • MUM: ' + esc(s.MUM_Name_Snapshot) + '</div>' +
+                '</div>' +
+                '<span class="badge badge-primary">' + (s.Findings ? s.Findings.length : 0) + ' Temuan</span>' +
+              '</div>' +
+              findingsHtml +
+            '</div>'
+          );
+        }).join('');
+
+        body.querySelectorAll('[data-dbphoto]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var parts = btn.getAttribute('data-dbphoto').split(':');
+            var sIdx = parseInt(parts[0], 10);
+            var fIdx = parseInt(parts[1], 10);
+            var pIdx = parseInt(parts[2], 10);
+            var photos = dashData.detailedSessions[sIdx].Findings[fIdx].Photos;
+            window.TM_PHOTO.openLightboxGallery(photos, pIdx);
+          });
+        });
+      }
+
+      function fetchDashboardData() {
+        var body = document.getElementById('db-tab-body');
+        if (body) body.innerHTML = '<p class="form-hint">Memuat analitik Dashboard...</p>';
+
+        window.TM_API.callRpc('api_getDashboardData', window.TM_API.getToken(), filters)
+          .then(function (data) {
+            dashData = data;
+            renderKpiCards();
+            renderActiveTab();
+          })
+          .catch(function (err) {
+            if (body) body.innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+          });
+      }
+
+      document.getElementById('db-open-export').addEventListener('click', function () {
+        if (window.TM_VIEWS_REPORTING) {
+          window.TM_VIEWS_REPORTING.openDashboardExportModal(filters);
+        }
+      });
+
+      document.getElementById('db-toggle-filter').addEventListener('click', function () {
+        filterOpen = !filterOpen;
+        var drawer = document.getElementById('db-filter-drawer');
+        if (drawer) drawer.classList.toggle('hidden', !filterOpen);
+        document.getElementById('db-toggle-filter').textContent = filterOpen ? 'Sembunyikan Filter ▴' : 'Tampilkan Filter ▾';
+      });
+
+      document.getElementById('db-reset-filter').addEventListener('click', function () {
+        filters = {
+          dateFrom: '',
+          dateTo: '',
+          outletIds: [],
+          trainerIds: [],
+          amIds: [],
+          mumIds: [],
+          categoryIds: [],
+          sectionIds: []
+        };
+        updateFilterCountBadge();
+        drawFilterDrawer();
+        fetchDashboardData();
+      });
+
+      document.getElementById('db-tabs').querySelectorAll('.tab-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          activeTab = btn.getAttribute('data-dtab');
+          document.getElementById('db-tabs').querySelectorAll('.tab-btn').forEach(function (b) {
+            b.classList.toggle('active', b.getAttribute('data-dtab') === activeTab);
+          });
+          renderActiveTab();
+        });
+      });
+
+      Promise.all([
+        window.TM_API.callRpc('api_getDashboardFilterOptions', window.TM_API.getToken()),
+        window.TM_API.callRpc('api_getDashboardData', window.TM_API.getToken(), filters)
+      ]).then(function (res) {
+        filterOptions = res[0];
+        dashData = res[1];
+        drawFilterDrawer();
+        renderKpiCards();
+        renderActiveTab();
+      }).catch(function (err) {
+        document.getElementById('db-tab-body').innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+      });
+    }
+
+    return {
+      renderDashboardView: renderDashboardView
+    };
+  })();
+</script>

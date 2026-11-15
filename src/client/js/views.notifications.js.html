@@ -1,0 +1,263 @@
+<script>
+  window.TM_VIEWS_NOTIFICATIONS = (function () {
+    function esc(s) {
+      return window.TM_APP.escapeHtml(s);
+    }
+
+    function renderNotificationCenterView(container) {
+      var user = window.TM_APP.getCurrentUser();
+      var activeTab = 'INBOX'; // INBOX | PREFERENCES | ADMIN_MONITOR
+      var statusFilter = 'ALL'; // ALL | UNREAD | READ
+
+      function drawShell() {
+        container.innerHTML =
+          '<div class="tabs-bar" id="ntf-tabs">' +
+            '<button class="tab-btn' + (activeTab === 'INBOX' ? ' active' : '') + '" data-ntab="INBOX">1. Pusat Notifikasi</button>' +
+            '<button class="tab-btn' + (activeTab === 'PREFERENCES' ? ' active' : '') + '" data-ntab="PREFERENCES">2. Preferensi Notifikasi Saya</button>' +
+            (user && user.Role === 'SUPER_ADMIN'
+              ? '<button class="tab-btn' + (activeTab === 'ADMIN_MONITOR' ? ' active' : '') + '" data-ntab="ADMIN_MONITOR">3. Kebijakan Wajib &amp; Monitor Email</button>'
+              : '') +
+          '</div>' +
+          '<div id="ntf-body"><p class="form-hint">Memuat...</p></div>';
+
+        container.querySelectorAll('#ntf-tabs .tab-btn').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            activeTab = btn.getAttribute('data-ntab');
+            drawShell();
+          });
+        });
+
+        var body = document.getElementById('ntf-body');
+        if (activeTab === 'INBOX') renderInboxTab(body);
+        else if (activeTab === 'PREFERENCES') renderPreferencesTab(body);
+        else if (activeTab === 'ADMIN_MONITOR') renderAdminMonitorTab(body);
+      }
+
+      function renderInboxTab(body) {
+        window.TM_API.callRpc('api_listMyNotificationsCenter', window.TM_API.getToken(), { status: statusFilter })
+          .then(function (res) {
+            var items = res.items || [];
+            var listHtml = items.length === 0
+              ? '<p class="form-hint" style="margin:0;">Tidak ada notifikasi pada filter ini.</p>'
+              : items.map(function (n) {
+                  var isRead = Boolean(n.ReadAt);
+                  return (
+                    '<div class="mobile-item-card" style="background:' + (isRead ? 'var(--bg-surface)' : 'var(--primary-soft)') + ';">' +
+                      '<div class="mobile-item-row">' +
+                        '<div><strong>' + esc(n.Title) + '</strong> <span class="badge badge-neutral">' + esc(n.Type) + '</span></div>' +
+                        (isRead ? '<span class="badge badge-neutral">Dibaca</span>' : '<span class="badge badge-primary">Belum Dibaca</span>') +
+                      '</div>' +
+                      '<div style="font-size:13px;margin:6px 0;">' + esc(n.Message) + '</div>' +
+                      '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
+                        '<span class="form-hint">' + esc(n.CreatedAt) + (n.ReadAt ? ' • Dibaca: ' + esc(n.ReadAt) : '') + '</span>' +
+                        '<div style="display:flex;gap:6px;">' +
+                          (isRead
+                            ? '<button class="btn btn-sm btn-secondary" data-ntoggle="' + esc(n.NotificationID) + '" data-read="false">Tandai Belum Dibaca</button>'
+                            : '<button class="btn btn-sm btn-primary" data-ntoggle="' + esc(n.NotificationID) + '" data-read="true">Tandai Dibaca</button>') +
+                        '</div>' +
+                      '</div>' +
+                    '</div>'
+                  );
+                }).join('');
+
+            body.innerHTML =
+              '<div class="card">' +
+                '<div class="card-header">' +
+                  '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+                    '<h2 class="card-title">Kotak Masuk Notifikasi</h2>' +
+                    '<span class="badge badge-danger">' + res.unreadCount + ' Belum Dibaca</span>' +
+                  '</div>' +
+                  '<div style="display:flex;gap:6px;flex-wrap:wrap;">' +
+                    '<button class="btn btn-sm ' + (statusFilter === 'ALL' ? 'btn-primary' : 'btn-secondary') + '" data-nflt="ALL">Semua (' + res.totalCount + ')</button>' +
+                    '<button class="btn btn-sm ' + (statusFilter === 'UNREAD' ? 'btn-primary' : 'btn-secondary') + '" data-nflt="UNREAD">Belum Dibaca</button>' +
+                    '<button class="btn btn-sm ' + (statusFilter === 'READ' ? 'btn-primary' : 'btn-secondary') + '" data-nflt="READ">Sudah Dibaca</button>' +
+                    (res.unreadCount > 0 ? '<button class="btn btn-sm btn-ghost" id="btn-mark-all-read">✓ Tandai Semua Dibaca</button>' : '') +
+                  '</div>' +
+                '</div>' +
+                '<div style="display:flex;flex-direction:column;gap:8px;">' + listHtml + '</div>' +
+              '</div>';
+
+            body.querySelectorAll('[data-nflt]').forEach(function (btn) {
+              btn.addEventListener('click', function () {
+                statusFilter = btn.getAttribute('data-nflt');
+                renderInboxTab(body);
+              });
+            });
+
+            var markAllBtn = document.getElementById('btn-mark-all-read');
+            if (markAllBtn) {
+              markAllBtn.addEventListener('click', function () {
+                window.TM_API.callRpc('api_markAllMyNotificationsRead', window.TM_API.getToken())
+                  .then(function () {
+                    window.TM_APP.refreshHeaderCounters();
+                    renderInboxTab(body);
+                  });
+              });
+            }
+
+            body.querySelectorAll('[data-ntoggle]').forEach(function (btn) {
+              btn.addEventListener('click', function () {
+                var id = btn.getAttribute('data-ntoggle');
+                var nextRead = btn.getAttribute('data-read') === 'true';
+                window.TM_API.callRpc('api_setNotificationReadStatus', window.TM_API.getToken(), id, nextRead)
+                  .then(function () {
+                    window.TM_APP.refreshHeaderCounters();
+                    renderInboxTab(body);
+                  });
+              });
+            });
+          })
+          .catch(function (err) {
+            body.innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+          });
+      }
+
+      function renderPreferencesTab(body) {
+        window.TM_API.callRpc('api_getMyNotificationPreferences', window.TM_API.getToken())
+          .then(function (res) {
+            var prefs = res.preferences || [];
+            var rowsHtml = prefs.map(function (p) {
+              var badge = p.systemLockedMandatory
+                ? '<span class="badge badge-danger">Wajib Kritis (Terkunci)</span>'
+                : (p.isMandatory ? '<span class="badge badge-warning">Wajib Organisasi</span>' : '<span class="badge badge-neutral">Opsional</span>');
+
+              return (
+                '<div class="mobile-item-card">' +
+                  '<div class="mobile-item-row">' +
+                    '<div><strong>' + esc(p.label) + '</strong> ' + badge + '<div class="form-hint">' + esc(p.description) + '</div></div>' +
+                  '</div>' +
+                  '<div style="display:flex;gap:16px;align-items:center;margin-top:8px;flex-wrap:wrap;">' +
+                    '<label style="display:flex;align-items:center;gap:6px;font-size:13px;">' +
+                      '<input type="checkbox" data-pref-inapp="' + esc(p.type) + '"' + (p.inAppEnabled ? ' checked' : '') + (p.isMandatory ? ' disabled' : '') + '> Kanal In-App' +
+                    '</label>' +
+                    '<label style="display:flex;align-items:center;gap:6px;font-size:13px;">' +
+                      '<input type="checkbox" data-pref-email="' + esc(p.type) + '"' + (p.emailEnabled ? ' checked' : '') + (p.systemLockedMandatory ? ' disabled' : '') + '> Kanal Email' +
+                    '</label>' +
+                    '<button type="button" class="btn btn-sm btn-secondary" data-pref-save="' + esc(p.type) + '">Simpan Preferensi</button>' +
+                  '</div>' +
+                '</div>'
+              );
+            }).join('');
+
+            body.innerHTML =
+              '<div class="card">' +
+                '<div class="card-header"><h2 class="card-title">Preferensi Kanal Notifikasi Saya</h2></div>' +
+                '<p class="form-hint" style="margin-top:0;">Notifikasi keamanan dan backup kritis tidak dapat dinonaktifkan. Tidak ada pengingat berkala khusus untuk Draft.</p>' +
+                '<div style="display:flex;flex-direction:column;gap:8px;">' + rowsHtml + '</div>' +
+              '</div>';
+
+            body.querySelectorAll('[data-pref-save]').forEach(function (btn) {
+              btn.addEventListener('click', function () {
+                var t = btn.getAttribute('data-pref-save');
+                var inAppEl = body.querySelector('[data-pref-inapp="' + t + '"]');
+                var emailEl = body.querySelector('[data-pref-email="' + t + '"]');
+                window.TM_API.callRpc('api_updateMyNotificationPreference', window.TM_API.getToken(), {
+                  type: t,
+                  inAppEnabled: inAppEl ? inAppEl.checked : true,
+                  emailEnabled: emailEl ? emailEl.checked : false
+                }).then(function () {
+                  window.TM_APP.showToast('Preferensi notifikasi disimpan.', 'success');
+                  renderPreferencesTab(body);
+                }).catch(function (err) {
+                  window.TM_APP.showToast(err.message, 'error');
+                });
+              });
+            });
+          })
+          .catch(function (err) {
+            body.innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+          });
+      }
+
+      function renderAdminMonitorTab(body) {
+        Promise.all([
+          window.TM_API.callRpc('api_getMyNotificationPreferences', window.TM_API.getToken()),
+          window.TM_API.callRpc('api_listEmailLogsForAdmin', window.TM_API.getToken(), '')
+        ]).then(function (res) {
+          var prefs = (res[0] && res[0].preferences) || [];
+          var emailLogs = res[1] || [];
+
+          var policyChecks = prefs.map(function (p) {
+            return (
+              '<label style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border-color);">' +
+                '<input type="checkbox" data-mand-type="' + esc(p.type) + '"' + (p.isMandatory ? ' checked' : '') + (p.systemLockedMandatory ? ' disabled' : '') + '>' +
+                '<span><strong>' + esc(p.label) + '</strong> ' + (p.systemLockedMandatory ? '<span class="badge badge-danger">Terkunci Sistem</span>' : '') + '</span>' +
+              '</label>'
+            );
+          }).join('');
+
+          var logRows = emailLogs.length === 0
+            ? '<tr><td colspan="5">Belum ada catatan pengiriman email.</td></tr>'
+            : emailLogs.map(function (e) {
+                var bClass = e.Status === 'Berhasil' ? 'badge-success' : 'badge-danger';
+                return (
+                  '<tr>' +
+                    '<td>' + esc(e.AttemptAt) + '</td>' +
+                    '<td>' + esc(e.Recipient) + '</td>' +
+                    '<td><code>' + esc(e.SessionID) + '</code></td>' +
+                    '<td><span class="badge ' + bClass + '">' + esc(e.Status) + '</span>' + (e.FailureReason ? '<div class="form-hint">' + esc(e.FailureReason) + '</div>' : '') + '</td>' +
+                    '<td>' +
+                      (e.Status === 'Gagal' ? '<button class="btn btn-sm btn-primary" data-retry-email="' + esc(e.EmailLogID) + '">Coba Kirim Ulang</button>' : '-') +
+                    '</td>' +
+                  '</tr>'
+                );
+              }).join('');
+
+          body.innerHTML =
+            '<div class="card">' +
+              '<div class="card-header">' +
+                '<h3 class="card-title">Kebijakan Notifikasi Wajib (Super Admin)</h3>' +
+                '<button class="btn btn-sm btn-primary" id="btn-save-mand-policy">Simpan Kebijakan Wajib</button>' +
+              '</div>' +
+              '<div>' + policyChecks + '</div>' +
+            '</div>' +
+            '<div class="card">' +
+              '<div class="card-header"><h3 class="card-title">Pemantauan Pengiriman &amp; Kegagalan Email</h3></div>' +
+              '<div class="table-wrap"><table class="data-table"><thead><tr><th>Waktu</th><th>Penerima</th><th>Referensi</th><th>Status &amp; Alasan</th><th>Aksi</th></tr></thead><tbody>' + logRows + '</tbody></table></div>' +
+            '</div>';
+
+          document.getElementById('btn-save-mand-policy').addEventListener('click', function () {
+            var selected = [];
+            body.querySelectorAll('[data-mand-type]').forEach(function (cb) {
+              if (cb.checked) selected.push(cb.getAttribute('data-mand-type'));
+            });
+            window.TM_API.callRpc('api_updateMandatoryNotificationPolicy', window.TM_API.getToken(), selected)
+              .then(function () {
+                window.TM_APP.showToast('Kebijakan notifikasi wajib berhasil diperbarui.', 'success');
+                renderAdminMonitorTab(body);
+              })
+              .catch(function (err) { window.TM_APP.showToast(err.message, 'error'); });
+          });
+
+          body.querySelectorAll('[data-retry-email]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              var id = btn.getAttribute('data-retry-email');
+              btn.disabled = true;
+              window.TM_API.callRpc('api_retryFailedEmailLog', window.TM_API.getToken(), id)
+                .then(function (r) {
+                  if (r.status === 'Berhasil') {
+                    window.TM_APP.showToast('Pengiriman ulang email berhasil.', 'success');
+                  } else {
+                    window.TM_APP.showToast('Pengiriman ulang masih gagal: ' + r.failureReason, 'error');
+                  }
+                  renderAdminMonitorTab(body);
+                })
+                .catch(function (err) {
+                  window.TM_APP.showToast(err.message, 'error');
+                  btn.disabled = false;
+                });
+            });
+          });
+        }).catch(function (err) {
+          body.innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+        });
+      }
+
+      drawShell();
+    }
+
+    return {
+      renderNotificationCenterView: renderNotificationCenterView
+    };
+  })();
+</script>

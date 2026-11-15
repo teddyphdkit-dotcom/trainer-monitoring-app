@@ -1,0 +1,592 @@
+<script>
+  window.TM_SYNC = (function () {
+    var STATUS_LABELS = {
+      OFFLINE: 'Offline',
+      PENDING: 'Menunggu Sinkronisasi',
+      SYNCING: 'Sedang Sinkronisasi',
+      SUCCESS: 'Berhasil',
+      ACTION_REQUIRED: 'Perlu Tindakan'
+    };
+
+    var currentStatus = navigator.onLine !== false ? STATUS_LABELS.SUCCESS : STATUS_LABELS.OFFLINE;
+    var isSyncing = false;
+    var statusListeners = [];
+
+    function esc(s) {
+      return window.TM_APP.escapeHtml(s);
+    }
+
+    function getDeviceId() {
+      return window.TM_API.getDeviceInfo();
+    }
+
+    function notifyStatusChange() {
+      updateHeaderIndicator();
+      statusListeners.forEach(function (fn) {
+        try { fn(currentStatus); } catch (e) {}
+      });
+    }
+
+    function onStatusChange(fn) {
+      statusListeners.push(fn);
+    }
+
+    function updateHeaderIndicator() {
+      var pill = document.getElementById('header-sync-pill');
+      if (!pill) return;
+      var cls = 'sync-pill';
+      if (currentStatus === STATUS_LABELS.OFFLINE || currentStatus === STATUS_LABELS.PENDING) {
+        cls += ' offline';
+      } else if (currentStatus === STATUS_LABELS.ACTION_REQUIRED) {
+        cls += ' badge-danger';
+      }
+      pill.className = cls;
+      pill.innerHTML = '<span>●</span><span class="sync-label-text">' + esc(currentStatus) + '</span>';
+    }
+
+    function recalculateGlobalSyncState() {
+      if (navigator.onLine === false) {
+        currentStatus = STATUS_LABELS.OFFLINE;
+        notifyStatusChange();
+        return Promise.resolve(currentStatus);
+      }
+      if (isSyncing) {
+        currentStatus = STATUS_LABELS.SYNCING;
+        notifyStatusChange();
+        return Promise.resolve(currentStatus);
+      }
+      return Promise.all([
+        window.TM_IDB.getAll('localDrafts'),
+        window.TM_IDB.getAll('localPhotos')
+      ]).then(function (res) {
+        var drafts = res[0] || [];
+        var photos = res[1] || [];
+        var hasConflict = drafts.some(function (d) { return d.syncStatus === 'CONFLICT'; });
+        var hasPendingDraft = drafts.some(function (d) { return d.syncStatus === 'PENDING' || d.syncStatus === 'LOCAL_ONLY'; });
+        var hasPendingPhoto = photos.some(function (p) { return p.uploadStatus === 'Menunggu' || p.uploadStatus === 'Gagal'; });
+
+        if (hasConflict) currentStatus = STATUS_LABELS.ACTION_REQUIRED;
+        else if (hasPendingDraft || hasPendingPhoto) currentStatus = STATUS_LABELS.PENDING;
+        else currentStatus = STATUS_LABELS.SUCCESS;
+
+        notifyStatusChange();
+        return currentStatus;
+      });
+    }
+
+    function saveDraftLocally(draftObj, markPending) {
+      var sessionId = draftObj.SessionID || ('SES-' + Date.now().toString(36).toUpperCase());
+      draftObj.SessionID = sessionId;
+      return window.TM_IDB.get('localDrafts', sessionId).then(function (existing) {
+        if (existing && existing.syncStatus === 'DELETED_LOCKED') {
+          throw new Error('Draft ini telah dihapus oleh Super Admin dan dikunci dalam mode Hanya Baca.');
+        }
+        var nextLocalVer = existing ? (parseInt(existing.localVersion || 1, 10) + 1) : 1;
+        var baseServerVer = existing ? parseInt(existing.baseServerVersion || 0, 10) : parseInt(draftObj.Version || 0, 10);
+        var record = {
+          sessionId: sessionId,
+          originDeviceId: existing ? existing.originDeviceId : getDeviceId(),
+          localVersion: nextLocalVer,
+          baseServerVersion: baseServerVer,
+          syncStatus: markPending ? 'PENDING' : 'SYNCED',
+          idempotencyKey: 'SYNC-' + sessionId + '-V' + nextLocalVer,
+          updatedAt: new Date().toISOString(),
+          draft: draftObj,
+          conflictServerSnapshot: existing ? existing.conflictServerSnapshot : null,
+          deletionMeta: existing ? existing.deletionMeta : null
+        };
+        return window.TM_IDB.put('localDrafts', record).then(function (saved) {
+          recalculateGlobalSyncState();
+          return saved;
+        });
+      });
+    }
+
+    function queuePhotoLocally(photoItem) {
+      var localPhotoId = photoItem.localPhotoId || photoItem.idempotencyKey || ('LPHT-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6));
+      var rec = Object.assign({}, photoItem, {
+        localPhotoId: localPhotoId,
+        uploadStatus: photoItem.uploadStatus || 'Menunggu',
+        updatedAt: new Date().toISOString()
+      });
+      return window.TM_IDB.put('localPhotos', rec).then(function (saved) {
+        recalculateGlobalSyncState();
+        return saved;
+      });
+    }
+
+    function runRetentionCheckAndCleanup() {
+      var token = window.TM_API.getToken();
+      if (!token) return Promise.resolve();
+
+      return window.TM_IDB.getAll('localDrafts').then(function (drafts) {
+        if (!drafts || drafts.length === 0) return;
+        var ids = drafts.map(function (d) { return d.sessionId; });
+        if (navigator.onLine === false) return;
+
+        return window.TM_API.callRpc('api_getDraftSyncAndRetentionStatus', token, ids, getDeviceId())
+          .then(function (statuses) {
+            var chains = [];
+            (statuses || []).forEach(function (st) {
+              var localRec = drafts.find(function (d) { return d.sessionId === st.sessionId; });
+              if (!localRec) return;
+
+              if (st.deletedAt) {
+                // Jika retensi 30x24 jam telah berakhir, hapus otomatis HANYA data lokal Draft tersebut (PRD 7.11)
+                if (st.retention && st.retention.shouldPurgeLocal) {
+                  chains.push(
+                    window.TM_IDB.removeSessionLocalDataOnly(st.sessionId).then(function () {
+                      return window.TM_IDB.put('retentionNotices', {
+                        noticeId: 'NTC-' + st.sessionId,
+                        sessionId: st.sessionId,
+                        outletName: (localRec.draft && localRec.draft.OutletNameSnapshot) || st.sessionId,
+                        purgedAt: new Date().toISOString(),
+                        message: 'Data lokal untuk Draft "' + st.sessionId + '" telah dihapus otomatis karena masa retensi 30 × 24 jam pasca-penghapusan telah berakhir.'
+                      });
+                    })
+                  );
+                } else {
+                  localRec.syncStatus = 'DELETED_LOCKED';
+                  localRec.deletionMeta = {
+                    deletedAt: st.deletedAt,
+                    deleteReason: st.deleteReason,
+                    originDeviceId: st.originDeviceId,
+                    isOriginDevice: st.isOriginDevice,
+                    otherDeviceNotice: st.otherDeviceNotice,
+                    restoreRequest: st.restoreRequest,
+                    retention: st.retention
+                  };
+                  chains.push(window.TM_IDB.put('localDrafts', localRec));
+                }
+              } else if (localRec.syncStatus === 'DELETED_LOCKED' && st.status === 'Draft') {
+                // Draft telah dipulihkan oleh Super Admin! (PRD 7.10: data lokal tidak otomatis menimpa server, harus melalui pemeriksaan/resolusi konflik)
+                localRec.syncStatus = 'PENDING';
+                localRec.hasUnsyncedPreDeleteChanges = true;
+                localRec.deletionMeta = null;
+                chains.push(window.TM_IDB.put('localDrafts', localRec));
+              }
+            });
+            return Promise.all(chains);
+          })
+          .catch(function () {});
+      });
+    }
+
+    function runAutoSync() {
+      var token = window.TM_API.getToken();
+      var user = window.TM_APP.getCurrentUser();
+      if (!token || !user || user.Role !== 'TRAINER') return Promise.resolve();
+      if (navigator.onLine === false) {
+        currentStatus = STATUS_LABELS.OFFLINE;
+        notifyStatusChange();
+        return Promise.resolve();
+      }
+      if (isSyncing) return Promise.resolve();
+
+      isSyncing = true;
+      currentStatus = STATUS_LABELS.SYNCING;
+      notifyStatusChange();
+
+      return runRetentionCheckAndCleanup()
+        .then(function () {
+          return window.TM_IDB.getAll('localDrafts');
+        })
+        .then(function (drafts) {
+          var pendingDrafts = (drafts || []).filter(function (d) {
+            return d.syncStatus === 'PENDING' || d.syncStatus === 'LOCAL_ONLY';
+          });
+          if (pendingDrafts.length === 0) return;
+
+          var ops = pendingDrafts.map(function (d) {
+            return {
+              sessionId: d.sessionId,
+              deviceId: getDeviceId(),
+              idempotencyKey: d.idempotencyKey,
+              localVersion: d.localVersion,
+              baseServerVersion: d.baseServerVersion,
+              hasUnsyncedPreDeleteChanges: Boolean(d.hasUnsyncedPreDeleteChanges),
+              draft: {
+                inspectionDate: d.draft.InspectionDate,
+                outletId: d.draft.OutletID || '',
+                outletName: d.draft.OutletNameSnapshot || '',
+                amId: d.draft.AM_ID || '',
+                mumId: d.draft.MUM_ID || '',
+                picName: d.draft.PIC_Name || '',
+                findings: (d.draft.Findings || []).map(function (f) {
+                  return {
+                    findingId: f.FindingID || '',
+                    categoryId: f.CategoryID || '',
+                    sectionId: f.SectionID || '',
+                    masalah: f.Masalah || '',
+                    mengapa: f.Mengapa || '',
+                    solusi: f.Solusi || ''
+                  };
+                })
+              }
+            };
+          });
+
+          return window.TM_API.callRpc('api_syncBatch', token, {
+            deviceId: getDeviceId(),
+            operations: ops
+          }).then(function (batchRes) {
+            var updates = [];
+            (batchRes.results || []).forEach(function (r) {
+              var localRec = pendingDrafts.find(function (x) { return x.sessionId === r.sessionId; });
+              if (!localRec) return;
+
+              if (r.status === 'SYNCED') {
+                localRec.syncStatus = 'SYNCED';
+                localRec.baseServerVersion = r.serverVersion;
+                localRec.hasUnsyncedPreDeleteChanges = false;
+                localRec.conflictServerSnapshot = null;
+                updates.push(window.TM_IDB.put('localDrafts', localRec));
+              } else if (r.status === 'CONFLICT') {
+                localRec.syncStatus = 'CONFLICT';
+                localRec.conflictServerSnapshot = r.serverSnapshot;
+                updates.push(window.TM_IDB.put('localDrafts', localRec));
+              } else if (r.status === 'DELETED_LOCKED') {
+                // PRD 7.12: Hentikan sync, kunci data lokal, jangan buat ulang Draft
+                localRec.syncStatus = 'DELETED_LOCKED';
+                localRec.deletionMeta = {
+                  deletedAt: r.deletedAt,
+                  deleteReason: r.deleteReason,
+                  originDeviceId: r.originDeviceId,
+                  isOriginDevice: r.isOriginDevice,
+                  retention: r.retention
+                };
+                updates.push(window.TM_IDB.put('localDrafts', localRec));
+              }
+            });
+            return Promise.all(updates);
+          });
+        })
+        .then(function () {
+          // Sinkronisasi antrean foto untuk Draft yang aktif dan tidak terkunci
+          return Promise.all([
+            window.TM_IDB.getAll('localDrafts'),
+            window.TM_IDB.getAll('localPhotos')
+          ]);
+        })
+        .then(function (res) {
+          var draftsMap = {};
+          (res[0] || []).forEach(function (d) { draftsMap[d.sessionId] = d; });
+          var pendingPhotos = (res[1] || []).filter(function (p) {
+            var parent = draftsMap[p.sessionId];
+            if (parent && (parent.syncStatus === 'DELETED_LOCKED' || parent.syncStatus === 'CONFLICT')) {
+              return false;
+            }
+            return p.uploadStatus === 'Menunggu' || p.uploadStatus === 'Gagal';
+          });
+
+          var chain = Promise.resolve();
+          pendingPhotos.forEach(function (ph) {
+            chain = chain.then(function () {
+              return window.TM_API.callRpc('api_uploadPhoto', token, {
+                sessionId: ph.sessionId,
+                findingId: ph.findingId,
+                fileName: ph.FileName,
+                mimeType: ph.MimeType,
+                base64Data: ph.base64Data,
+                comment: ph.PhotoComment || '',
+                idempotencyKey: ph.idempotencyKey
+              }).then(function (savedPh) {
+                ph.PhotoID = savedPh.PhotoID;
+                ph.uploadStatus = 'Berhasil';
+                return window.TM_IDB.put('localPhotos', ph);
+              }).catch(function (err) {
+                if (err && err.code === 'ERR_DRAFT_DELETED_BY_ADMIN') {
+                  ph.uploadStatus = 'Terkunci (Draft Dihapus)';
+                } else {
+                  ph.uploadStatus = 'Gagal';
+                }
+                return window.TM_IDB.put('localPhotos', ph);
+              });
+            });
+          });
+          return chain;
+        })
+        .catch(function () {})
+        .finally(function () {
+          isSyncing = false;
+          recalculateGlobalSyncState();
+          if (window.TM_APP && typeof window.TM_APP.refreshHeaderCounters === 'function') {
+            window.TM_APP.refreshHeaderCounters();
+          }
+        });
+    }
+
+    function openReadOnlyLocalDraftModal(localRec) {
+      var meta = localRec.deletionMeta || {};
+      if (meta.isOriginDevice === false) {
+        window.TM_APP.openModal(
+          'Data Lokal Tertahan di Perangkat Asal',
+          '<div class="alert alert-warning">' +
+            esc(meta.otherDeviceNotice || ('Data lokal yang belum tersinkronisasi hanya tersimpan dan dapat dilihat dari perangkat asal (' + meta.originDeviceId + ').')) +
+          '</div>'
+        );
+        return;
+      }
+
+      window.TM_IDB.getAll('localPhotos').then(function (allPhotos) {
+        var d = localRec.draft || {};
+        var findings = d.Findings || [];
+        var sesPhotos = (allPhotos || []).filter(function (p) { return p.sessionId === localRec.sessionId; });
+
+        var findingsHtml = findings.length === 0
+          ? '<p class="form-hint">Tidak ada temuan lokal.</p>'
+          : findings.map(function (f, i) {
+              return (
+                '<div class="card" style="background:var(--bg-app);margin-bottom:8px;">' +
+                  '<strong>#' + (i + 1) + ' ' + esc(f.CategoryNameSnapshot || f.CategoryID || '-') + ' • ' + esc(f.SectionNameSnapshot || f.SectionID || '-') + '</strong>' +
+                  '<div style="font-size:13px;"><strong>Masalah:</strong> ' + esc(f.Masalah || '-') + '</div>' +
+                  '<div style="font-size:13px;"><strong>Mengapa:</strong> ' + esc(f.Mengapa || '-') + '</div>' +
+                  '<div style="font-size:13px;"><strong>Solusi:</strong> ' + esc(f.Solusi || '-') + '</div>' +
+                '</div>'
+              );
+            }).join('');
+
+        var photosHtml = sesPhotos.length === 0
+          ? '<p class="form-hint">Tidak ada foto lokal tertahan.</p>'
+          : '<div style="display:flex;gap:8px;flex-wrap:wrap;">' + sesPhotos.map(function (ph, idx) {
+              return '<button type="button" class="btn btn-sm btn-secondary" data-locphoto="' + idx + '">📷 ' + esc(ph.FileName) + (ph.PhotoComment ? ' (' + esc(ph.PhotoComment) + ')' : '') + '</button>';
+            }).join('') + '</div>';
+
+        var html =
+          '<div class="alert alert-warning">' +
+            '<strong>Draft Dihapus — Menunggu Pemulihan (Mode Hanya Baca)</strong><br>' +
+            'Dihapus pada: ' + esc(meta.deletedAt || '-') + ' • Alasan: ' + esc(meta.deleteReason || '-') +
+          '</div>' +
+          '<div style="font-size:13px;margin-bottom:10px;">' +
+            '<div><strong>Session ID:</strong> <code>' + esc(localRec.sessionId) + '</code></div>' +
+            '<div><strong>Outlet:</strong> ' + esc(d.OutletNameSnapshot || '-') + ' • <strong>Tanggal:</strong> ' + esc(d.InspectionDate || '-') + '</div>' +
+            '<div><strong>PIC:</strong> ' + esc(d.PIC_Name || '-') + ' • <strong>Versi Lokal:</strong> v' + esc(localRec.localVersion) + '</div>' +
+          '</div>' +
+          '<h4 style="margin:10px 0 6px;">Temuan Lokal</h4>' + findingsHtml +
+          '<h4 style="margin:10px 0 6px;">Foto &amp; Komentar Lokal</h4>' + photosHtml;
+
+        window.TM_APP.openModal('Data Lokal Terkunci (Hanya Baca)', html);
+        var root = document.getElementById('modal-root');
+        if (root) {
+          root.querySelectorAll('[data-locphoto]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              window.TM_PHOTO.openLightboxGallery(sesPhotos, parseInt(btn.getAttribute('data-locphoto'), 10));
+            });
+          });
+        }
+      });
+    }
+
+    function openConflictResolutionModal(localRec, onResolved) {
+      var srv = (localRec.conflictServerSnapshot && localRec.conflictServerSnapshot.session) || {};
+      var loc = localRec.draft || {};
+
+      var html =
+        '<div class="alert alert-warning">' +
+          'Data pada server telah berubah (Versi Server: v' + esc(srv.Version || '?') + '). Data lokal tidak menimpa server secara otomatis. Pilih versi yang ingin dipertahankan:' +
+        '</div>' +
+        '<div class="grid-2">' +
+          '<div class="card" style="margin:0;">' +
+            '<strong>Versi Server</strong>' +
+            '<div class="form-hint">Outlet: ' + esc(srv.OutletNameSnapshot || '-') + '</div>' +
+            '<div class="form-hint">Tanggal: ' + esc(srv.InspectionDate || '-') + '</div>' +
+            '<div class="form-hint">PIC: ' + esc(srv.PIC_Name || '-') + '</div>' +
+            '<div class="form-hint">Diperbarui: ' + esc(srv.UpdatedAt || '-') + '</div>' +
+          '</div>' +
+          '<div class="card" style="margin:0;">' +
+            '<strong>Versi Lokal Perangkat Ini</strong>' +
+            '<div class="form-hint">Outlet: ' + esc(loc.OutletNameSnapshot || '-') + '</div>' +
+            '<div class="form-hint">Tanggal: ' + esc(loc.InspectionDate || '-') + '</div>' +
+            '<div class="form-hint">PIC: ' + esc(loc.PIC_Name || '-') + '</div>' +
+            '<div class="form-hint">Diperbarui: ' + esc(localRec.updatedAt || '-') + '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="modal-footer">' +
+          '<button type="button" class="btn btn-secondary" id="cf-use-server">Gunakan Versi Server</button>' +
+          '<button type="button" class="btn btn-primary" id="cf-apply-local">Terapkan Perubahan Lokal Saya</button>' +
+        '</div>';
+
+      var close = window.TM_APP.openModal('Resolusi Konflik Sinkronisasi', html);
+
+      function submitResolution(strategy) {
+        window.TM_API.callRpc('api_resolveSyncConflict', window.TM_API.getToken(), localRec.sessionId, {
+          strategy: strategy,
+          deviceId: getDeviceId(),
+          localDraft: {
+            inspectionDate: loc.InspectionDate,
+            outletId: loc.OutletID || '',
+            outletName: loc.OutletNameSnapshot || '',
+            amId: loc.AM_ID || '',
+            mumId: loc.MUM_ID || '',
+            picName: loc.PIC_Name || '',
+            findings: (loc.Findings || []).map(function (f) {
+              return {
+                findingId: f.FindingID || '',
+                categoryId: f.CategoryID || '',
+                sectionId: f.SectionID || '',
+                masalah: f.Masalah || '',
+                mengapa: f.Mengapa || '',
+                solusi: f.Solusi || ''
+              };
+            })
+          }
+        }).then(function (res) {
+          localRec.syncStatus = 'SYNCED';
+          localRec.baseServerVersion = res.serverVersion;
+          localRec.conflictServerSnapshot = null;
+          if (strategy === 'USE_SERVER' && res.snapshot && res.snapshot.session) {
+            localRec.draft = Object.assign({}, res.snapshot.session, {
+              Findings: res.snapshot.findings || []
+            });
+          }
+          return window.TM_IDB.put('localDrafts', localRec);
+        }).then(function () {
+          window.TM_APP.showToast('Konflik sinkronisasi berhasil diselesaikan.', 'success');
+          close();
+          recalculateGlobalSyncState();
+          if (onResolved) onResolved();
+        }).catch(function (err) {
+          window.TM_APP.showToast(err.message, 'error');
+        });
+      }
+
+      document.getElementById('cf-use-server').addEventListener('click', function () { submitResolution('USE_SERVER'); });
+      document.getElementById('cf-apply-local').addEventListener('click', function () { submitResolution('APPLY_LOCAL'); });
+    }
+
+    function renderSyncStatusPanel(container, onReloadRequested) {
+      if (!container) return;
+      Promise.all([
+        window.TM_IDB.getAll('localDrafts'),
+        window.TM_IDB.getAll('localPhotos'),
+        window.TM_IDB.getAll('retentionNotices'),
+        window.TM_IDB.estimateStorage()
+      ]).then(function (res) {
+        var drafts = res[0] || [];
+        var photos = res[1] || [];
+        var notices = res[2] || [];
+        var storage = res[3];
+
+        var unsyncedDrafts = drafts.filter(function (d) { return d.syncStatus === 'PENDING' || d.syncStatus === 'LOCAL_ONLY'; });
+        var conflictDrafts = drafts.filter(function (d) { return d.syncStatus === 'CONFLICT'; });
+        var lockedDeletedDrafts = drafts.filter(function (d) { return d.syncStatus === 'DELETED_LOCKED'; });
+        var pendingPhotos = photos.filter(function (p) { return p.uploadStatus === 'Menunggu' || p.uploadStatus === 'Gagal'; });
+
+        var noticesHtml = notices.map(function (n) {
+          return (
+            '<div class="alert alert-info" style="display:flex;justify-content:space-between;align-items:center;gap:8px;">' +
+              '<span>' + esc(n.message) + '</span>' +
+              '<button type="button" class="btn btn-sm btn-secondary" data-dismiss-notice="' + esc(n.noticeId) + '">Mengerti</button>' +
+            '</div>'
+          );
+        }).join('');
+
+        var storageWarningHtml = storage.nearLimit
+          ? '<div class="alert alert-warning"><strong>Peringatan Kapasitas Penyimpanan:</strong> Ruang penyimpanan browser telah terpakai ' + storage.usagePercent + '%. Segera sinkronkan Draft dan hindari membersihkan data situs browser agar data lokal belum tersinkronisasi tidak hilang.</div>'
+          : '';
+
+        var conflictsHtml = conflictDrafts.map(function (c) {
+          return (
+            '<div class="alert alert-warning" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
+              '<span><strong>Perlu Tindakan (Konflik):</strong> Draft <code>' + esc(c.sessionId) + '</code> memiliki perbedaan versi dengan server.</span>' +
+              '<button type="button" class="btn btn-sm btn-primary" data-resolve-conflict="' + esc(c.sessionId) + '">Selesaikan Konflik</button>' +
+            '</div>'
+          );
+        }).join('');
+
+        var lockedHtml = lockedDeletedDrafts.map(function (ld) {
+          var meta = ld.deletionMeta || {};
+          var ret = meta.retention || {};
+          var warn7d = ret.show7DayWarning
+            ? '<div style="color:var(--danger);font-weight:600;font-size:12px;">Peringatan H-7: Data lokal ini akan dihapus otomatis pada ' + esc(ret.retentionDeleteAt) + '.</div>'
+            : '';
+          return (
+            '<div class="mobile-item-card" style="border-color:rgba(244,63,94,0.45);margin-top:8px;">' +
+              '<div class="mobile-item-row">' +
+                '<div><strong>Draft Lokal Terkunci: ' + esc((ld.draft && ld.draft.OutletNameSnapshot) || ld.sessionId) + '</strong>' +
+                '<div class="form-hint">' + esc(ret.label || 'Draft Dihapus — Menunggu Pemulihan') + '</div>' + warn7d + '</div>' +
+                '<button type="button" class="btn btn-sm btn-secondary" data-view-local="' + esc(ld.sessionId) + '">Lihat Data Lokal</button>' +
+              '</div>' +
+            '</div>'
+          );
+        }).join('');
+
+        var mbUsed = (storage.usageBytes / (1024 * 1024)).toFixed(2);
+        container.innerHTML =
+          noticesHtml +
+          storageWarningHtml +
+          conflictsHtml +
+          '<div class="card" style="margin-bottom:14px;">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">' +
+              '<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:13px;">' +
+                '<span><strong>Status Sync:</strong> <span class="badge badge-primary">' + esc(currentStatus) + '</span></span>' +
+                '<span>Draft Belum Sync: <strong>' + unsyncedDrafts.length + '</strong></span>' +
+                '<span>Foto Menunggu Upload: <strong>' + pendingPhotos.length + '</strong></span>' +
+                (storage.supported ? '<span class="form-hint">Storage Lokal: ~' + mbUsed + ' MB (' + storage.usagePercent + '%)</span>' : '') +
+              '</div>' +
+              '<button type="button" class="btn btn-sm btn-secondary" id="btn-retry-sync">↻ Coba Lagi Sinkronisasi</button>' +
+            '</div>' +
+            lockedHtml +
+          '</div>';
+
+        var retryBtn = document.getElementById('btn-retry-sync');
+        if (retryBtn) {
+          retryBtn.addEventListener('click', function () {
+            runAutoSync().then(function () {
+              renderSyncStatusPanel(container, onReloadRequested);
+              if (onReloadRequested) onReloadRequested();
+            });
+          });
+        }
+
+        container.querySelectorAll('[data-dismiss-notice]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            window.TM_IDB.remove('retentionNotices', btn.getAttribute('data-dismiss-notice')).then(function () {
+              renderSyncStatusPanel(container, onReloadRequested);
+            });
+          });
+        });
+
+        container.querySelectorAll('[data-resolve-conflict]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var sid = btn.getAttribute('data-resolve-conflict');
+            var rec = conflictDrafts.find(function (x) { return x.sessionId === sid; });
+            if (rec) {
+              openConflictResolutionModal(rec, function () {
+                renderSyncStatusPanel(container, onReloadRequested);
+                if (onReloadRequested) onReloadRequested();
+              });
+            }
+          });
+        });
+
+        container.querySelectorAll('[data-view-local]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var sid = btn.getAttribute('data-view-local');
+            var rec = lockedDeletedDrafts.find(function (x) { return x.sessionId === sid; });
+            if (rec) openReadOnlyLocalDraftModal(rec);
+          });
+        });
+      });
+    }
+
+    window.addEventListener('online', function () {
+      runAutoSync();
+    });
+    window.addEventListener('offline', function () {
+      recalculateGlobalSyncState();
+    });
+
+    return {
+      STATUS_LABELS: STATUS_LABELS,
+      onStatusChange: onStatusChange,
+      updateHeaderIndicator: updateHeaderIndicator,
+      recalculateGlobalSyncState: recalculateGlobalSyncState,
+      saveDraftLocally: saveDraftLocally,
+      queuePhotoLocally: queuePhotoLocally,
+      runRetentionCheckAndCleanup: runRetentionCheckAndCleanup,
+      runAutoSync: runAutoSync,
+      renderSyncStatusPanel: renderSyncStatusPanel
+    };
+  })();
+</script>

@@ -1,0 +1,1150 @@
+<script>
+  window.TM_VIEWS_INPUT = (function () {
+    function esc(s) {
+      return window.TM_APP.escapeHtml(s);
+    }
+
+    function todayWibStr() {
+      var now = new Date();
+      var utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
+      var wib = new Date(utcMs + 7 * 3600000);
+      return wib.toISOString().slice(0, 10);
+    }
+
+    var CLIENT_MONTH_MAP = {
+      jan: 1, januari: 1, january: 1,
+      feb: 2, februari: 2, february: 2,
+      mar: 3, maret: 3, march: 3,
+      apr: 4, april: 4,
+      mei: 5, may: 5,
+      jun: 6, juni: 6, june: 6,
+      jul: 7, juli: 7, july: 7,
+      agu: 8, agt: 8, ags: 8, agustus: 8, aug: 8, august: 8,
+      sep: 9, sept: 9, september: 9,
+      okt: 10, oct: 10, oktober: 10, october: 10,
+      nov: 11, nop: 11, november: 11, nopember: 11,
+      des: 12, dec: 12, desember: 12, december: 12
+    };
+
+    var SHORT_MONTHS_ID = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+
+    function normalizeDateInput(val) {
+      if (!val) return '';
+      var s = String(val).trim();
+      if (!s) return '';
+      var pad = function (n) { return String(n).padStart(2, '0'); };
+
+      // 1. YYYY-MM-DD atau YYYY/MM/DD
+      var mYmd = s.match(/^(\d{4})[\/\-.\s](\d{1,2})[\/\-.\s](\d{1,2})$/);
+      if (mYmd) {
+        return mYmd[1] + '-' + pad(parseInt(mYmd[2], 10)) + '-' + pad(parseInt(mYmd[3], 10));
+      }
+
+      // 2. DD/MM/YYYY atau DD-MM-YYYY (06/11/2026)
+      var mDmy = s.match(/^(\d{1,2})[\/\-.\s](\d{1,2})[\/\-.\s](\d{4})$/);
+      if (mDmy) {
+        var d = parseInt(mDmy[1], 10);
+        var mo = parseInt(mDmy[2], 10);
+        var y = parseInt(mDmy[3], 10);
+        if (mo > 12 && d >= 1 && d <= 12) {
+          var tmp = d; d = mo; mo = tmp;
+        }
+        return y + '-' + pad(mo) + '-' + pad(d);
+      }
+
+      // 3. D MMM YYYY / DD MMMM YYYY (6 Nov 2026)
+      var mText = s.match(/^(\d{1,2})[\s\/\-.,]+([A-Za-z]+)[\s\/\-.,]+(\d{4})$/);
+      if (mText) {
+        var d3 = parseInt(mText[1], 10);
+        var mo3 = CLIENT_MONTH_MAP[mText[2].toLowerCase()] || 0;
+        var y3 = parseInt(mText[3], 10);
+        if (mo3 >= 1 && mo3 <= 12) {
+          return y3 + '-' + pad(mo3) + '-' + pad(d3);
+        }
+      }
+
+      // 4. ISO atau Date string dari Google Sheets
+      var parsed = new Date(s);
+      if (!isNaN(parsed.getTime())) {
+        var utcMs = parsed.getTime() + parsed.getTimezoneOffset() * 60000;
+        var wib = new Date(utcMs + 7 * 3600000);
+        return wib.toISOString().slice(0, 10);
+      }
+      return s;
+    }
+
+    function formatCalendarDisplay(val) {
+      var ymd = normalizeDateInput(val);
+      var m = ymd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (!m) return val || '-';
+      var dNum = parseInt(m[3], 10);
+      var mIdx = parseInt(m[2], 10) - 1;
+      var mName = SHORT_MONTHS_ID[mIdx] || m[2];
+      return m[3] + '/' + m[2] + '/' + m[1] + ' (' + dNum + ' ' + mName + ' ' + m[1] + ')';
+    }
+
+    function formatRelativeAge(isoStr) {
+      if (!isoStr) return '-';
+      var diffMs = Math.max(0, Date.now() - new Date(isoStr).getTime());
+      var mins = Math.floor(diffMs / 60000);
+      if (mins < 60) return mins + ' mnt lalu';
+      var hrs = Math.floor(mins / 60);
+      if (hrs < 24) return hrs + ' jam lalu';
+      return Math.floor(hrs / 24) + ' hari lalu';
+    }
+
+    function makeClientUuid(prefix) {
+      return prefix + '-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2, 8).toUpperCase();
+    }
+
+    /* ==================== HALAMAN INPUT & DRAFT SAYA (TRAINER) ==================== */
+    function renderInputView(container) {
+      var master = null;
+      var draftsInfo = { drafts: [], activeCount: 0, maxActiveDrafts: 5 };
+      var deletedDrafts = [];
+      var activeSession = null; // null = list/start, object = editing draft
+      var findings = []; // local UI state tied to activeSession
+      var uploadQueue = [];
+      var uploading = false;
+
+      container.innerHTML =
+        '<div id="inp-sync-panel"></div>' +
+        '<div id="inp-drafts-panel"></div>' +
+        '<div id="inp-deleted-drafts-panel"></div>' +
+        '<div id="inp-editor-panel"></div>';
+
+      function refreshSyncPanel() {
+        var sPanel = document.getElementById('inp-sync-panel');
+        if (sPanel && window.TM_SYNC) {
+          window.TM_SYNC.renderSyncStatusPanel(sPanel, loadInitial);
+        }
+      }
+
+      function loadInitial() {
+        refreshSyncPanel();
+        if (navigator.onLine === false) {
+          Promise.all([
+            window.TM_IDB.get('masterCache', 'active_bundle'),
+            window.TM_IDB.getAll('drafts')
+          ]).then(function (offlineRes) {
+            master = (offlineRes[0] && offlineRes[0].bundle) || { active: { ams: [], mums: [], categories: [], sections: [] } };
+            var localDrafts = (offlineRes[1] || []).filter(function (d) { return d.syncState !== 'DELETED_LOCKED'; });
+            draftsInfo = {
+              drafts: localDrafts.map(function (d) {
+                return {
+                  SessionID: d.sessionId,
+                  InspectionDate: d.header && d.header.inspectionDate,
+                  OutletNameSnapshot: d.header && d.header.outletName,
+                  FindingCount: (d.findings || []).length,
+                  CreatedAt: d.updatedAtClient,
+                  UpdatedAt: d.updatedAtClient
+                };
+              }),
+              activeCount: localDrafts.length,
+              maxActiveDrafts: 5
+            };
+            deletedDrafts = [];
+            renderDraftsPanel();
+            renderDeletedDraftsPanel();
+            if (!activeSession) {
+              renderStartPrompt();
+            }
+          });
+          return;
+        }
+
+        Promise.all([
+          window.TM_API.callRpc('api_getMasterBundle', window.TM_API.getToken()),
+          window.TM_API.callRpc('api_listMyDrafts', window.TM_API.getToken()),
+          window.TM_API.callRpc('api_listMyDeletedDrafts', window.TM_API.getToken())
+        ]).then(function (res) {
+          master = res[0];
+          draftsInfo = res[1];
+          deletedDrafts = res[2] || [];
+          window.TM_IDB.put('masterCache', { key: 'active_bundle', bundle: master, savedAt: new Date().toISOString() });
+          renderDraftsPanel();
+          renderDeletedDraftsPanel();
+          if (!activeSession) {
+            renderStartPrompt();
+          }
+        }).catch(function (err) {
+          container.innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+        });
+      }
+
+      function renderDraftsPanel() {
+        var box = document.getElementById('inp-drafts-panel');
+        if (!box) return;
+        var drafts = draftsInfo.drafts || [];
+        var limit = draftsInfo.maxActiveDrafts || 5;
+        var atLimit = draftsInfo.activeCount >= limit;
+
+        var listHtml = drafts.length === 0
+          ? '<p class="form-hint" style="margin:0;">Belum ada Draft aktif.</p>'
+          : drafts.map(function (d) {
+              var restored = d.IsRestoredFlagUntil && new Date(d.IsRestoredFlagUntil).getTime() > Date.now();
+              return (
+                '<div class="mobile-item-card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">' +
+                  '<div>' +
+                    '<strong>' + esc(d.OutletNameSnapshot || 'Outlet belum diisi') + '</strong> ' +
+                    (restored ? '<span class="badge badge-warning">Dipulihkan</span> ' : '') +
+                    '<span class="badge badge-neutral">' + d.FindingCount + ' temuan</span>' +
+                    '<div class="form-hint">Tanggal: ' + esc(d.InspectionDate) + ' • Umur: ' + esc(formatRelativeAge(d.CreatedAt)) + ' • Diperbarui: ' + esc(formatRelativeAge(d.UpdatedAt)) + '</div>' +
+                  '</div>' +
+                  '<div style="display:flex;gap:8px;">' +
+                    '<button class="btn btn-sm btn-primary" data-dact="open" data-id="' + esc(d.SessionID) + '">Lanjutkan</button>' +
+                    '<button class="btn btn-sm btn-danger" data-dact="del" data-id="' + esc(d.SessionID) + '">Hapus</button>' +
+                  '</div>' +
+                '</div>'
+              );
+            }).join('');
+
+        box.innerHTML =
+          '<div class="card">' +
+            '<div class="card-header">' +
+              '<div>' +
+                '<h2 class="card-title">Draft Saya (' + draftsInfo.activeCount + ' / ' + limit + ')</h2>' +
+                (atLimit ? '<p class="form-hint" style="color:var(--warning);margin:4px 0 0;">Batas Draft aktif tercapai. Selesaikan atau hapus Draft untuk membuat sesi baru.</p>' : '') +
+              '</div>' +
+              '<button id="btn-new-session" class="btn btn-primary" ' + (atLimit ? 'disabled' : '') + '>+ Pemeriksaan Baru</button>' +
+            '</div>' +
+            '<div style="display:flex;flex-direction:column;gap:8px;">' + listHtml + '</div>' +
+          '</div>';
+
+        document.getElementById('btn-new-session').addEventListener('click', startNewDraft);
+        box.querySelectorAll('button[data-dact]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var id = btn.getAttribute('data-id');
+            if (btn.getAttribute('data-dact') === 'open') openExistingDraft(id);
+            if (btn.getAttribute('data-dact') === 'del') confirmDeleteDraft(id);
+          });
+        });
+      }
+
+      function renderDeletedDraftsPanel() {
+        var box = document.getElementById('inp-deleted-drafts-panel');
+        if (!box) return;
+        if (!deletedDrafts || deletedDrafts.length === 0) {
+          box.innerHTML = '';
+          return;
+        }
+        var itemsHtml = deletedDrafts.map(function (d) {
+          var req = d.RestoreRequest;
+          var statusLabel = req
+            ? ('Permintaan Pemulihan: ' + req.Status + (req.DecisionReason ? ' (' + req.DecisionReason + ')' : ''))
+            : 'Draft Dihapus — Menunggu Pemulihan';
+          return (
+            '<div class="mobile-item-card" style="border-color:rgba(244,63,94,0.45);">' +
+              '<div class="mobile-item-row">' +
+                '<div><strong>' + esc(d.OutletNameSnapshot || 'Outlet belum diisi') + '</strong> <code>' + esc(d.SessionID) + '</code>' +
+                '<div class="form-hint">Dihapus oleh ' + esc(d.DeletedByName) + ' pada ' + esc(d.DeletedAt) + ' • Alasan: ' + esc(d.DeleteReason) + '</div></div>' +
+                '<span class="badge badge-danger">' + esc(statusLabel) + '</span>' +
+              '</div>' +
+              (d.CanRequestRestore
+                ? '<div class="mobile-item-actions"><button class="btn btn-sm btn-primary" data-reqrestore="' + esc(d.SessionID) + '">Ajukan Pemulihan (≤ 7×24 Jam)</button></div>'
+                : '') +
+            '</div>'
+          );
+        }).join('');
+
+        box.innerHTML =
+          '<div class="card">' +
+            '<div class="card-header"><h3 class="card-title">Draft Dihapus oleh Super Admin</h3></div>' +
+            '<div style="display:flex;flex-direction:column;gap:8px;">' + itemsHtml + '</div>' +
+          '</div>';
+
+        box.querySelectorAll('button[data-reqrestore]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var sid = btn.getAttribute('data-reqrestore');
+            window.TM_APP.promptDialog({
+              variant: 'info',
+              icon: '↺',
+              title: 'Ajukan Pemulihan Draft',
+              message: 'Permintaan akan dikirim ke Super Admin untuk ditinjau.',
+              inputLabel: 'Alasan pengajuan (wajib)',
+              placeholder: 'Contoh: Draft terhapus padahal pemeriksaan belum selesai',
+              requiredMessage: 'Alasan pengajuan wajib diisi.',
+              confirmText: 'Kirim Pengajuan'
+            }).then(function (reason) {
+              if (!reason) return;
+              window.TM_API.callRpc('api_requestDraftRestore', window.TM_API.getToken(), sid, reason)
+                .then(function () {
+                  window.TM_APP.showToast('Permintaan pemulihan berhasil dikirim ke Super Admin.', 'success');
+                  loadInitial();
+                })
+                .catch(function (err) {
+                  window.TM_APP.showToast(err.message, 'error');
+                });
+            });
+          });
+        });
+      }
+
+      function renderStartPrompt() {
+        var box = document.getElementById('inp-editor-panel');
+        if (!box) return;
+        box.innerHTML =
+          '<div class="card">' +
+            '<p class="form-hint" style="margin:0;">Pilih <strong>+ Pemeriksaan Baru</strong> atau lanjutkan salah satu Draft di atas untuk mulai mencatat temuan operasional outlet.</p>' +
+          '</div>';
+      }
+
+      function startNewDraft() {
+        activeSession = {
+          SessionID: '',
+          InspectionDate: todayWibStr(),
+          OutletID: '',
+          OutletNameSnapshot: '',
+          AM_ID: '',
+          MUM_ID: '',
+          PIC_Name: '',
+          Status: 'Draft'
+        };
+        findings = [];
+        renderEditor();
+      }
+
+      function openExistingDraft(sessionId) {
+        window.TM_API.callRpc('api_getSessionDetail', window.TM_API.getToken(), sessionId)
+          .then(function (res) {
+            activeSession = res.session;
+            findings = (res.findings || []).map(function (f) {
+              return {
+                FindingID: f.FindingID,
+                CategoryID: f.CategoryID,
+                SectionID: f.SectionID,
+                Masalah: f.Masalah,
+                Mengapa: f.Mengapa,
+                Solusi: f.Solusi,
+                Photos: (f.Photos || []).map(function (ph) {
+                  return Object.assign({}, ph, { uploadStatus: 'Berhasil' });
+                }),
+                dirty: false
+              };
+            });
+            renderEditor();
+          })
+          .catch(function (err) {
+            window.TM_APP.showToast(err.message, 'error');
+          });
+      }
+
+      function confirmDeleteDraft(sessionId) {
+        window.TM_APP.confirmDialog({
+          variant: 'danger',
+          title: 'Hapus Draft?',
+          message: 'Draft pemeriksaan ini akan dihapus dari daftar Draft aktif Anda.',
+          note: 'Temuan dan foto di dalam Draft ini ikut terhapus.',
+          confirmText: 'Ya, Hapus Draft'
+        }).then(function (ok) {
+          if (!ok) return;
+          window.TM_API.callRpc('api_deleteMyDraft', window.TM_API.getToken(), sessionId)
+            .then(function () {
+              window.TM_APP.showToast('Draft dihapus.', 'success');
+              if (activeSession && activeSession.SessionID === sessionId) {
+                activeSession = null;
+                findings = [];
+              }
+              loadInitial();
+            })
+            .catch(function (err) {
+              window.TM_APP.showToast(err.message, 'error');
+            });
+        });
+      }
+
+      function saveSessionHeaderToServer() {
+        var dateInputEl = document.getElementById('ses-date');
+        var rawDateVal = dateInputEl ? dateInputEl.value : (activeSession.InspectionDate || todayWibStr());
+        var normalizedDate = normalizeDateInput(rawDateVal) || todayWibStr();
+        var dto = {
+          sessionId: activeSession.SessionID || '',
+          inspectionDate: normalizedDate,
+          outletId: activeSession.OutletID || '',
+          outletName: document.getElementById('ses-outlet').value,
+          amId: document.getElementById('ses-am').value,
+          mumId: document.getElementById('ses-mum').value,
+          picName: document.getElementById('ses-pic').value
+        };
+        return window.TM_API.callRpc('api_saveDraft', window.TM_API.getToken(), dto)
+          .then(function (saved) {
+            activeSession = saved;
+            activeSession.InspectionDate = normalizeDateInput(saved.InspectionDate) || normalizedDate;
+            return activeSession;
+          });
+      }
+
+      function processUploadQueue() {
+        if (uploading || uploadQueue.length === 0) return;
+        uploading = true;
+        var job = uploadQueue.shift();
+        job.photoRef.uploadStatus = 'Mengunggah';
+        drawFindingsList();
+
+        function attemptUpload(retriesLeft) {
+          return window.TM_API.callRpc('api_uploadPhoto', window.TM_API.getToken(), {
+            sessionId: activeSession.SessionID,
+            findingId: job.findingId,
+            fileName: job.photoRef.FileName,
+            mimeType: job.photoRef.MimeType,
+            base64Data: job.photoRef.base64Data,
+            comment: job.photoRef.PhotoComment || '',
+            idempotencyKey: job.photoRef.idempotencyKey
+          }).catch(function (err) {
+            if (retriesLeft > 0 && (err.code === 'ERR_TRANSPORT' || err.code === 'ERR_LOCK_TIMEOUT')) {
+              return attemptUpload(retriesLeft - 1);
+            }
+            throw err;
+          });
+        }
+
+        attemptUpload(2).then(function (savedPhoto) {
+          Object.assign(job.photoRef, savedPhoto, { uploadStatus: 'Berhasil', errorMessage: '' });
+          drawFindingsList();
+        }).catch(function (err) {
+          job.photoRef.uploadStatus = 'Gagal';
+          job.photoRef.errorMessage = err.message;
+          drawFindingsList();
+          window.TM_APP.showToast('Upload foto gagal: ' + err.message, 'error');
+        }).finally(function () {
+          uploading = false;
+          processUploadQueue();
+        });
+      }
+
+      function ensureDraftAndFindingSaved(fIndex) {
+        var f = findings[fIndex];
+        var chain = activeSession.SessionID ? Promise.resolve(activeSession) : saveSessionHeaderToServer();
+        return chain.then(function (ses) {
+          return window.TM_API.callRpc('api_saveFindingDraft', window.TM_API.getToken(), ses.SessionID, {
+            findingId: f.FindingID || '',
+            categoryId: f.CategoryID,
+            sectionId: f.SectionID,
+            masalah: f.Masalah,
+            mengapa: f.Mengapa,
+            solusi: f.Solusi
+          }).then(function (savedF) {
+            f.FindingID = savedF.FindingID;
+            f.dirty = false;
+            return savedF;
+          });
+        });
+      }
+
+      function renderEditor() {
+        var box = document.getElementById('inp-editor-panel');
+        if (!box || !activeSession) return;
+        var amOpts = '<option value="">-- Pilih AM --</option>' + master.active.ams.map(function (a) {
+          return '<option value="' + esc(a.AM_ID) + '"' + (activeSession.AM_ID === a.AM_ID ? ' selected' : '') + '>' + esc(a.AM_Name) + '</option>';
+        }).join('');
+        var mumOpts = '<option value="">-- Pilih MUM --</option>' + master.active.mums.map(function (m) {
+          return '<option value="' + esc(m.MUM_ID) + '"' + (activeSession.MUM_ID === m.MUM_ID ? ' selected' : '') + '>' + esc(m.MUM_Name) + '</option>';
+        }).join('');
+
+        box.innerHTML =
+          '<div class="card">' +
+            '<div class="card-header">' +
+              '<h2 class="card-title">' + (activeSession.SessionID ? 'Lanjutkan Pemeriksaan' : 'Sesi Pemeriksaan Baru') + '</h2>' +
+              '<span class="badge badge-warning">Draft</span>' +
+            '</div>' +
+            (activeSession.IsRestoredFlagUntil && new Date(activeSession.IsRestoredFlagUntil).getTime() > Date.now()
+              ? '<div class="alert alert-warning"><strong>Draft Dipulihkan:</strong> Harap periksa kembali kelengkapan seluruh field dan foto bukti sebelum melanjutkan atau memfinalisasi sesi.</div>'
+              : '') +
+            '<div id="ses-alert"></div>' +
+            '<div class="grid-2">' +
+              '<div class="form-group">' +
+                '<label class="form-label">Tanggal Pemeriksaan *</label>' +
+                '<input type="date" id="ses-date" class="form-control" max="' + todayWibStr() + '" value="' + esc(normalizeDateInput(activeSession.InspectionDate) || todayWibStr()) + '">' +
+                '<div class="form-hint" id="ses-date-preview">' + esc(formatCalendarDisplay(activeSession.InspectionDate || todayWibStr())) + '</div>' +
+              '</div>' +
+              '<div class="form-group">' +
+                '<label class="form-label">Outlet *</label>' +
+                '<input type="text" id="ses-outlet" class="form-control" placeholder="Ketik nama Outlet..." value="' + esc(activeSession.OutletNameSnapshot || '') + '">' +
+                '<div id="ses-outlet-sugs"></div>' +
+              '</div>' +
+              '<div class="form-group">' +
+                '<label class="form-label">AM (Area Manager) *</label>' +
+                '<select id="ses-am" class="form-control">' + amOpts + '</select>' +
+              '</div>' +
+              '<div class="form-group">' +
+                '<label class="form-label">MUM *</label>' +
+                '<select id="ses-mum" class="form-control">' + mumOpts + '</select>' +
+              '</div>' +
+              '<div class="form-group">' +
+                '<label class="form-label">PIC Outlet *</label>' +
+                '<input type="text" id="ses-pic" class="form-control" placeholder="Nama PIC di lokasi" value="' + esc(activeSession.PIC_Name || '') + '">' +
+              '</div>' +
+            '</div>' +
+            '<hr style="border:none;border-top:1px solid var(--border-color);margin:14px 0;">' +
+            '<div class="card-header">' +
+              '<h3 class="card-title">Daftar Temuan (<span id="fnd-count">' + findings.length + '</span>)</h3>' +
+              '<button type="button" id="btn-add-finding" class="btn btn-secondary">+ Tambah Temuan</button>' +
+            '</div>' +
+            '<div id="findings-list-box"></div>' +
+            '<div style="display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:16px;">' +
+              '<button type="button" id="btn-save-draft" class="btn btn-secondary">Simpan Draft</button>' +
+              '<button type="button" id="btn-finalize-session" class="btn btn-primary">Finalisasi Pemeriksaan</button>' +
+            '</div>' +
+          '</div>';
+
+        // Update date preview when calendar changes
+        var dateEl = document.getElementById('ses-date');
+        if (dateEl) {
+          dateEl.addEventListener('change', function () {
+            var prev = document.getElementById('ses-date-preview');
+            if (prev) prev.textContent = formatCalendarDisplay(dateEl.value);
+            activeSession.InspectionDate = normalizeDateInput(dateEl.value) || todayWibStr();
+          });
+        }
+
+        // Outlet autocomplete & duplicate detection
+        var outletInput = document.getElementById('ses-outlet');
+        var sugTimer = null;
+        outletInput.addEventListener('input', function () {
+          activeSession.OutletID = '';
+          clearTimeout(sugTimer);
+          var val = outletInput.value;
+          if (!val || val.trim().length < 2) {
+            document.getElementById('ses-outlet-sugs').innerHTML = '';
+            return;
+          }
+          sugTimer = setTimeout(function () {
+            window.TM_API.callRpc('api_suggestOutlets', window.TM_API.getToken(), val)
+              .then(function (sugs) {
+                var sBox = document.getElementById('ses-outlet-sugs');
+                if (!sBox || !sugs || sugs.length === 0) {
+                  if (sBox) sBox.innerHTML = '';
+                  return;
+                }
+                sBox.innerHTML = '<div class="suggestion-box">' + sugs.slice(0, 5).map(function (s) {
+                  return '<button type="button" class="suggestion-item" data-oid="' + esc(s.OutletID) + '" data-oname="' + esc(s.CanonicalName) + '">' +
+                    '<span><strong>' + esc(s.CanonicalName) + '</strong> <span class="form-hint">(' + esc(s.OutletCode) + ')</span></span>' +
+                    '<span class="badge badge-primary">' + Math.round(s.score * 100) + '%</span>' +
+                  '</button>';
+                }).join('') + '</div>';
+
+                sBox.querySelectorAll('.suggestion-item').forEach(function (btn) {
+                  btn.addEventListener('click', function () {
+                    activeSession.OutletID = btn.getAttribute('data-oid');
+                    activeSession.OutletNameSnapshot = btn.getAttribute('data-oname');
+                    outletInput.value = activeSession.OutletNameSnapshot;
+                    sBox.innerHTML = '';
+                  });
+                });
+              }).catch(function () {});
+          }, 250);
+        });
+
+        document.getElementById('btn-add-finding').addEventListener('click', function () {
+          findings.push({
+            FindingID: '',
+            CategoryID: '',
+            SectionID: '',
+            Masalah: '',
+            Mengapa: '',
+            Solusi: '',
+            Photos: [],
+            dirty: true
+          });
+          drawFindingsList();
+        });
+
+        document.getElementById('btn-save-draft').addEventListener('click', function () {
+          handleSaveAll(false);
+        });
+        document.getElementById('btn-finalize-session').addEventListener('click', function () {
+          handleSaveAll(true);
+        });
+
+        drawFindingsList();
+      }
+
+      function drawFindingsList() {
+        var box = document.getElementById('findings-list-box');
+        var cnt = document.getElementById('fnd-count');
+        if (cnt) cnt.textContent = String(findings.length);
+        if (!box) return;
+
+        if (findings.length === 0) {
+          box.innerHTML = '<p class="form-hint">Belum ada temuan ditambahkan. Klik <strong>+ Tambah Temuan</strong> atau finalisasi jika tidak ada temuan.</p>';
+          return;
+        }
+
+        var catOptsBase = master.active.categories;
+        var secOptsBase = master.active.sections;
+
+        box.innerHTML = findings.map(function (f, idx) {
+          var catOptions = '<option value="">-- Pilih Category --</option>' + catOptsBase.map(function (c) {
+            return '<option value="' + esc(c.CategoryID) + '"' + (f.CategoryID === c.CategoryID ? ' selected' : '') + '>' + esc(c.CategoryName) + '</option>';
+          }).join('');
+          var secOptions = '<option value="">-- Pilih Section --</option>' + secOptsBase.map(function (s) {
+            return '<option value="' + esc(s.SectionID) + '"' + (f.SectionID === s.SectionID ? ' selected' : '') + '>' + esc(s.SectionName) + '</option>';
+          }).join('');
+
+          var photosHtml = (f.Photos || []).map(function (ph, pIdx) {
+            var stBadge = ph.uploadStatus === 'Berhasil'
+              ? '<span class="badge badge-success">Berhasil</span>'
+              : (ph.uploadStatus === 'Mengunggah'
+                ? '<span class="badge badge-primary">Mengunggah...</span>'
+                : (ph.uploadStatus === 'Gagal'
+                  ? '<span class="badge badge-danger">Gagal</span>'
+                  : '<span class="badge badge-neutral">Menunggu</span>'));
+
+            var thumbSrc = ph.base64Data || ph.dataUrl || '';
+            return (
+              '<div class="photo-card">' +
+                (thumbSrc
+                  ? '<img class="photo-thumb" src="' + esc(thumbSrc) + '" data-lb="' + idx + ':' + pIdx + '">'
+                  : '<div class="photo-thumb" style="display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--text-secondary);" data-lb="' + idx + ':' + pIdx + '">Lihat Foto</div>') +
+                '<div>' + stBadge + '</div>' +
+                '<input type="text" class="form-control" style="min-height:34px;font-size:12px;padding:4px 8px;" placeholder="Komentar (opsional)" value="' + esc(ph.PhotoComment || '') + '" data-pcomment="' + idx + ':' + pIdx + '">' +
+                '<div style="display:flex;gap:4px;flex-wrap:wrap;">' +
+                  (ph.uploadStatus === 'Gagal' ? '<button type="button" class="btn btn-sm btn-primary" data-pretry="' + idx + ':' + pIdx + '">Coba Lagi</button>' : '') +
+                  '<button type="button" class="btn btn-sm btn-danger" data-pdel="' + idx + ':' + pIdx + '">Hapus</button>' +
+                '</div>' +
+              '</div>'
+            );
+          }).join('');
+
+          return (
+            '<div class="card" style="background:var(--bg-app);">' +
+              '<div class="card-header">' +
+                '<strong>Temuan #' + (idx + 1) + '</strong>' +
+                '<button type="button" class="btn btn-sm btn-danger" data-fdel="' + idx + '">Hapus Temuan</button>' +
+              '</div>' +
+              '<div class="grid-2">' +
+                '<div class="form-group"><label class="form-label">Master Category *</label><select class="form-control" data-ffield="CategoryID" data-fidx="' + idx + '">' + catOptions + '</select></div>' +
+                '<div class="form-group"><label class="form-label">Section *</label><select class="form-control" data-ffield="SectionID" data-fidx="' + idx + '">' + secOptions + '</select></div>' +
+              '</div>' +
+              '<div class="form-group"><label class="form-label">Masalah *</label><textarea class="form-control" rows="2" data-ffield="Masalah" data-fidx="' + idx + '">' + esc(f.Masalah) + '</textarea></div>' +
+              '<div class="form-group"><label class="form-label">Mengapa *</label><textarea class="form-control" rows="2" data-ffield="Mengapa" data-fidx="' + idx + '">' + esc(f.Mengapa) + '</textarea></div>' +
+              '<div class="form-group"><label class="form-label">Solusi (Opsional)</label><textarea class="form-control" rows="2" data-ffield="Solusi" data-fidx="' + idx + '">' + esc(f.Solusi) + '</textarea></div>' +
+              '<div class="form-group">' +
+                '<label class="form-label">Foto Bukti * (Min 1, Maks 5 • JPG/PNG • Kompresi otomatis ≤ 1 MB)</label>' +
+                ((f.Photos || []).length < 5
+                  ? '<input type="file" accept="image/png,image/jpeg" multiple data-fphoto="' + idx + '">'
+                  : '<span class="form-hint">Maksimal 5 foto tercapai.</span>') +
+                '<div class="photo-grid">' + photosHtml + '</div>' +
+              '</div>' +
+            '</div>'
+          );
+        }).join('');
+
+        // Bind field edits
+        box.querySelectorAll('[data-ffield]').forEach(function (el) {
+          el.addEventListener('change', syncField);
+          el.addEventListener('input', syncField);
+          function syncField() {
+            var idx = parseInt(el.getAttribute('data-fidx'), 10);
+            var key = el.getAttribute('data-ffield');
+            findings[idx][key] = el.value;
+            findings[idx].dirty = true;
+          }
+        });
+
+        // Delete finding
+        box.querySelectorAll('[data-fdel]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var idx = parseInt(btn.getAttribute('data-fdel'), 10);
+            var target = findings[idx];
+            if (target.FindingID) {
+              window.TM_API.callRpc('api_deleteFindingInDraft', window.TM_API.getToken(), target.FindingID)
+                .then(function () {
+                  findings.splice(idx, 1);
+                  drawFindingsList();
+                }).catch(function (err) { window.TM_APP.showToast(err.message, 'error'); });
+            } else {
+              findings.splice(idx, 1);
+              drawFindingsList();
+            }
+          });
+        });
+
+        // Add photos
+        box.querySelectorAll('input[data-fphoto]').forEach(function (input) {
+          input.addEventListener('change', function () {
+            var idx = parseInt(input.getAttribute('data-fphoto'), 10);
+            var files = Array.prototype.slice.call(input.files || []);
+            var remainingSlots = 5 - (findings[idx].Photos || []).length;
+            if (files.length > remainingSlots) {
+              window.TM_APP.showToast('Maksimal 5 foto per temuan.', 'error');
+              files = files.slice(0, remainingSlots);
+            }
+            if (files.length === 0) return;
+
+            ensureDraftAndFindingSaved(idx).then(function (savedF) {
+              files.forEach(function (file) {
+                window.TM_PHOTO.compressImageFile(file).then(function (comp) {
+                  var pRef = {
+                    PhotoID: '',
+                    FileName: comp.fileName,
+                    MimeType: comp.mimeType,
+                    base64Data: comp.base64Data,
+                    PhotoComment: '',
+                    uploadStatus: 'Menunggu',
+                    idempotencyKey: makeClientUuid('PHTKEY')
+                  };
+                  findings[idx].Photos.push(pRef);
+                  uploadQueue.push({ findingId: savedF.FindingID, photoRef: pRef });
+                  drawFindingsList();
+                  processUploadQueue();
+                }).catch(function (err) {
+                  window.TM_APP.showToast(err.message, 'error');
+                });
+              });
+            }).catch(function (err) {
+              window.TM_APP.showToast(err.message, 'error');
+            });
+          });
+        });
+
+        // Photo comment update
+        box.querySelectorAll('input[data-pcomment]').forEach(function (inp) {
+          inp.addEventListener('change', function () {
+            var parts = inp.getAttribute('data-pcomment').split(':');
+            var ph = findings[parts[0]].Photos[parts[1]];
+            ph.PhotoComment = inp.value;
+            if (ph.PhotoID && ph.uploadStatus === 'Berhasil') {
+              window.TM_API.callRpc('api_updatePhotoComment', window.TM_API.getToken(), ph.PhotoID, ph.PhotoComment)
+                .catch(function () {});
+            }
+          });
+        });
+
+        // Retry photo
+        box.querySelectorAll('[data-pretry]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var parts = btn.getAttribute('data-pretry').split(':');
+            var fIdx = parseInt(parts[0], 10);
+            var pIdx = parseInt(parts[1], 10);
+            var ph = findings[fIdx].Photos[pIdx];
+            ph.uploadStatus = 'Menunggu';
+            uploadQueue.push({ findingId: findings[fIdx].FindingID, photoRef: ph });
+            drawFindingsList();
+            processUploadQueue();
+          });
+        });
+
+        // Delete photo
+        box.querySelectorAll('[data-pdel]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var parts = btn.getAttribute('data-pdel').split(':');
+            var fIdx = parseInt(parts[0], 10);
+            var pIdx = parseInt(parts[1], 10);
+            var ph = findings[fIdx].Photos[pIdx];
+            if (ph.PhotoID) {
+              window.TM_API.callRpc('api_deletePhoto', window.TM_API.getToken(), ph.PhotoID)
+                .then(function () {
+                  findings[fIdx].Photos.splice(pIdx, 1);
+                  drawFindingsList();
+                }).catch(function (err) { window.TM_APP.showToast(err.message, 'error'); });
+            } else {
+              findings[fIdx].Photos.splice(pIdx, 1);
+              drawFindingsList();
+            }
+          });
+        });
+
+        // Open lightbox
+        box.querySelectorAll('[data-lb]').forEach(function (el) {
+          el.addEventListener('click', function () {
+            var parts = el.getAttribute('data-lb').split(':');
+            var fIdx = parseInt(parts[0], 10);
+            var pIdx = parseInt(parts[1], 10);
+            window.TM_PHOTO.openLightboxGallery(findings[fIdx].Photos, pIdx);
+          });
+        });
+      }
+
+      function handleSaveAll(andFinalize) {
+        var alertEl = document.getElementById('ses-alert');
+        if (alertEl) alertEl.innerHTML = '';
+
+        if (andFinalize && (uploading || uploadQueue.length > 0)) {
+          window.TM_APP.showToast('Tunggu seluruh antrean upload foto selesai sebelum finalisasi.', 'error');
+          return;
+        }
+
+        saveSessionHeaderToServer().then(function (ses) {
+          var p = Promise.resolve();
+          findings.forEach(function (_, idx) {
+            p = p.then(function () {
+              return ensureDraftAndFindingSaved(idx);
+            });
+          });
+          return p.then(function () { return ses; });
+        }).then(function (ses) {
+          if (window.TM_IDB) {
+            window.TM_IDB.remove('drafts', ses.SessionID).then(refreshSyncPanel);
+          }
+          if (!andFinalize) {
+            window.TM_APP.showToast('Draft pemeriksaan tersimpan di server.', 'success');
+            loadInitial();
+            return;
+          }
+          return attemptFinalize(ses.SessionID, false);
+        }).catch(function (err) {
+          if (!andFinalize && window.TM_SYNC && (navigator.onLine === false || err.code === 'ERR_TRANSPORT')) {
+            var localSid = activeSession.SessionID || makeClientUuid('SES');
+            activeSession.SessionID = localSid;
+            window.TM_SYNC.saveDraftLocally({
+              sessionId: localSid,
+              expectedVersion: Number(activeSession.Version || 0),
+              header: {
+                sessionId: localSid,
+                inspectionDate: normalizeDateInput(document.getElementById('ses-date').value) || todayWibStr(),
+                outletId: activeSession.OutletID || '',
+                outletName: document.getElementById('ses-outlet').value,
+                amId: document.getElementById('ses-am').value,
+                mumId: document.getElementById('ses-mum').value,
+                picName: document.getElementById('ses-pic').value
+              },
+              findings: findings.map(function (f) {
+                return {
+                  findingId: f.FindingID || makeClientUuid('FND'),
+                  categoryId: f.CategoryID,
+                  sectionId: f.SectionID,
+                  masalah: f.Masalah,
+                  mengapa: f.Mengapa,
+                  solusi: f.Solusi
+                };
+              })
+            }).then(function () {
+              window.TM_APP.showToast('Disimpan secara lokal (Offline). Akan disinkronkan saat koneksi pulih.', 'success');
+              refreshSyncPanel();
+              loadInitial();
+            });
+            return;
+          }
+          if (alertEl) alertEl.innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+          else window.TM_APP.showToast(err.message, 'error');
+        });
+      }
+
+      function attemptFinalize(sessionId, confirmNoFindings) {
+        return window.TM_API.callRpc('api_finalizeSession', window.TM_API.getToken(), sessionId, confirmNoFindings)
+          .then(function (res) {
+            window.TM_APP.showToast('Pemeriksaan selesai! Nomor Laporan: ' + res.session.ReportNumber, 'success');
+            activeSession = null;
+            findings = [];
+            loadInitial();
+          })
+          .catch(function (err) {
+            if (err.code === 'ERR_CONFIRM_EMPTY_SESSION') {
+              return window.TM_APP.confirmDialog({
+                variant: 'warning',
+                icon: '📋',
+                title: 'Selesaikan Tanpa Temuan?',
+                message: err.message,
+                confirmText: 'Ya, Selesaikan',
+                cancelText: 'Kembali'
+              }).then(function (ok) {
+                if (ok) return attemptFinalize(sessionId, true);
+              });
+            }
+            var alertEl = document.getElementById('ses-alert');
+            if (alertEl) alertEl.innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+            else window.TM_APP.showToast(err.message, 'error');
+          });
+      }
+
+      loadInitial();
+    }
+
+    /* ==================== RIWAYAT PEMERIKSAAN SELESAI ==================== */
+    function renderCompletedSessionsView(container) {
+      var user = window.TM_APP.getCurrentUser();
+      var master = null;
+
+      container.innerHTML =
+        '<div class="card">' +
+          '<div class="card-header"><h2 class="card-title">Daftar Pemeriksaan Selesai</h2></div>' +
+          '<div id="comp-list"><p class="form-hint">Memuat riwayat pemeriksaan...</p></div>' +
+        '</div>' +
+        '<div id="comp-deleted-box"></div>';
+
+      Promise.all([
+        window.TM_API.callRpc('api_getMasterBundle', window.TM_API.getToken()),
+        window.TM_API.callRpc('api_listCompletedSessions', window.TM_API.getToken(), 50),
+        user.Role === 'SUPER_ADMIN'
+          ? window.TM_API.callRpc('api_listDeletedCompletedSessions', window.TM_API.getToken())
+          : Promise.resolve([])
+      ]).then(function (res) {
+        master = res[0];
+        var sessions = res[1] || [];
+        var deletedSessions = res[2] || [];
+        var box = document.getElementById('comp-list');
+        var delBox = document.getElementById('comp-deleted-box');
+
+        if (user.Role === 'SUPER_ADMIN' && delBox && deletedSessions.length > 0) {
+          delBox.innerHTML =
+            '<div class="card">' +
+              '<div class="card-header"><h3 class="card-title">Sesi Pemeriksaan Selesai yang Dihapus (Super Admin)</h3></div>' +
+              '<div style="display:flex;flex-direction:column;gap:8px;">' +
+                deletedSessions.map(function (ds) {
+                  return (
+                    '<div class="mobile-item-card">' +
+                      '<div class="mobile-item-row">' +
+                        '<div><strong>' + esc(ds.OutletNameSnapshot) + '</strong> <code>' + esc(ds.ReportNumber) + '</code>' +
+                        '<div class="form-hint">Tanggal: ' + esc(ds.InspectionDate) + ' • Dihapus: ' + esc(ds.DeletedAt) + ' oleh ' + esc(ds.DeletedByName) + ' • Alasan: ' + esc(ds.DeleteReason) + '</div></div>' +
+                        '<button class="btn btn-sm btn-primary" data-srestore="' + esc(ds.SessionID) + '">Pulihkan Sesi</button>' +
+                      '</div>' +
+                    '</div>'
+                  );
+                }).join('') +
+              '</div>' +
+            '</div>';
+
+          delBox.querySelectorAll('[data-srestore]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              var sid = btn.getAttribute('data-srestore');
+              window.TM_API.callRpc('api_restoreSession', window.TM_API.getToken(), sid)
+                .then(function () {
+                  window.TM_APP.showToast('Sesi pemeriksaan berhasil dipulihkan.', 'success');
+                  renderCompletedSessionsView(container);
+                })
+                .catch(function (err) { window.TM_APP.showToast(err.message, 'error'); });
+            });
+          });
+        }
+        if (sessions.length === 0) {
+          box.innerHTML = '<p class="form-hint">Belum ada pemeriksaan yang difinalisasi.</p>';
+          return;
+        }
+
+        var rows = sessions.map(function (s) {
+          return (
+            '<tr>' +
+              '<td><code>' + esc(s.ReportNumber) + '</code></td>' +
+              '<td>' + esc(s.InspectionDate) + '</td>' +
+              '<td><strong>' + esc(s.OutletNameSnapshot) + '</strong></td>' +
+              '<td>' + esc(s.TrainerName) + '</td>' +
+              '<td><span class="badge badge-primary">' + s.FindingCount + ' temuan</span></td>' +
+              '<td>' +
+                '<button class="btn btn-sm btn-secondary" data-sdetail="' + esc(s.SessionID) + '">Detail</button> ' +
+                '<button class="btn btn-sm btn-primary" data-spdf="' + esc(s.SessionID) + '" data-strainer="' + esc(s.TrainerID) + '">📄 PDF &amp; Email</button>' +
+                (user.Role === 'SUPER_ADMIN'
+                  ? ' <button class="btn btn-sm btn-danger" data-sdel="' + esc(s.SessionID) + '">Hapus</button>'
+                  : '') +
+              '</td>' +
+            '</tr>'
+          );
+        }).join('');
+
+        var cards = sessions.map(function (s) {
+          return (
+            '<div class="mobile-item-card">' +
+              '<div class="mobile-item-row">' +
+                '<div><strong>' + esc(s.OutletNameSnapshot) + '</strong><div class="form-hint">' + esc(s.ReportNumber) + ' • ' + esc(s.InspectionDate) + '</div></div>' +
+                '<span class="badge badge-primary">' + s.FindingCount + ' temuan</span>' +
+              '</div>' +
+              '<div class="form-hint">Trainer: ' + esc(s.TrainerName) + ' • PIC: ' + esc(s.PIC_Name) + '</div>' +
+              '<div class="mobile-item-actions">' +
+                '<button class="btn btn-sm btn-secondary" data-sdetail="' + esc(s.SessionID) + '">Detail</button>' +
+                '<button class="btn btn-sm btn-primary" data-spdf="' + esc(s.SessionID) + '" data-strainer="' + esc(s.TrainerID) + '">📄 PDF &amp; Email</button>' +
+                (user.Role === 'SUPER_ADMIN' ? '<button class="btn btn-sm btn-danger" data-sdel="' + esc(s.SessionID) + '">Hapus</button>' : '') +
+              '</div>' +
+            '</div>'
+          );
+        }).join('');
+
+        box.innerHTML =
+          '<div class="table-wrap"><table class="data-table"><thead><tr><th>No. Laporan</th><th>Tanggal</th><th>Outlet</th><th>Trainer</th><th>Temuan</th><th>Aksi</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+          '<div class="mobile-card-list">' + cards + '</div>';
+
+        box.querySelectorAll('[data-sdetail]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            openSessionDetailModal(btn.getAttribute('data-sdetail'));
+          });
+        });
+
+        box.querySelectorAll('[data-spdf]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            if (window.TM_VIEWS_REPORTING) {
+              window.TM_VIEWS_REPORTING.openSessionPdfModal(
+                btn.getAttribute('data-spdf'),
+                btn.getAttribute('data-strainer')
+              );
+            }
+          });
+        });
+
+        box.querySelectorAll('[data-sdel]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var sid = btn.getAttribute('data-sdel');
+            window.TM_APP.promptDialog({
+              variant: 'danger',
+              title: 'Hapus Sesi Pemeriksaan?',
+              message: 'Sesi ini akan disembunyikan dari dashboard dan laporan. Super Admin masih dapat memulihkannya.',
+              inputLabel: 'Alasan penghapusan (wajib)',
+              placeholder: 'Contoh: Sesi diinput ganda',
+              requiredMessage: 'Alasan penghapusan wajib diisi.',
+              confirmText: 'Ya, Hapus Sesi'
+            }).then(function (reason) {
+              if (!reason) return;
+              window.TM_API.callRpc('api_deleteSession', window.TM_API.getToken(), sid, reason)
+                .then(function () {
+                  window.TM_APP.showToast('Sesi pemeriksaan berhasil dihapus.', 'success');
+                  renderCompletedSessionsView(container);
+                })
+                .catch(function (err) { window.TM_APP.showToast(err.message, 'error'); });
+            });
+          });
+        });
+      }).catch(function (err) {
+        document.getElementById('comp-list').innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+      });
+
+      function openSessionDetailModal(sessionId) {
+        window.TM_API.callRpc('api_getSessionDetail', window.TM_API.getToken(), sessionId)
+          .then(function (res) {
+            var s = res.session;
+            var fList = res.findings || [];
+            var canTrainerEdit = user.Role === 'TRAINER' && s.TrainerID === user.UserID &&
+              (Date.now() - new Date(s.SubmittedAt).getTime()) <= 24 * 3600000;
+            var canEditAny = user.Role === 'SUPER_ADMIN' || canTrainerEdit;
+
+            var fHtml = fList.length === 0
+              ? '<p class="form-hint">Sesi diselesaikan tanpa temuan.</p>'
+              : fList.map(function (f, i) {
+                  var isDeleted = Boolean(f.DeletedAt);
+                  var thumbs = (f.Photos || []).map(function (ph, pIdx) {
+                    return '<button type="button" class="btn btn-sm btn-secondary" data-viewphoto="' + i + ':' + pIdx + '">📷 Foto ' + (pIdx + 1) + (ph.PhotoComment ? ' (' + esc(ph.PhotoComment) + ')' : '') + '</button>';
+                  }).join(' ');
+                  return (
+                    '<div class="card" style="margin-bottom:10px;opacity:' + (isDeleted ? '0.6' : '1') + ';">' +
+                      '<div class="card-header">' +
+                        '<strong>#' + (i + 1) + ' ' + esc(f.CategoryNameSnapshot) + ' • ' + esc(f.SectionNameSnapshot) + '</strong>' +
+                        (isDeleted ? '<span class="badge badge-danger">Dihapus</span>' : '') +
+                      '</div>' +
+                      '<div style="font-size:13px;"><strong>Masalah:</strong> ' + esc(f.Masalah) + '</div>' +
+                      '<div style="font-size:13px;"><strong>Mengapa:</strong> ' + esc(f.Mengapa) + '</div>' +
+                      (f.Solusi ? '<div style="font-size:13px;"><strong>Solusi:</strong> ' + esc(f.Solusi) + '</div>' : '') +
+                      '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">' + thumbs + '</div>' +
+                      '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">' +
+                        (!isDeleted && canEditAny ? '<button class="btn btn-sm btn-secondary" data-fedit="' + esc(f.FindingID) + '">Edit Temuan</button>' : '') +
+                        (!isDeleted && canEditAny ? '<button class="btn btn-sm btn-danger" data-fdel="' + esc(f.FindingID) + '">Hapus Temuan</button>' : '') +
+                        (isDeleted && user.Role === 'SUPER_ADMIN' ? '<button class="btn btn-sm btn-primary" data-frestore="' + esc(f.FindingID) + '">Pulihkan</button>' : '') +
+                      '</div>' +
+                    '</div>'
+                  );
+                }).join('');
+
+            var html =
+              '<div style="font-size:13px;margin-bottom:12px;">' +
+                '<div><strong>No. Laporan:</strong> ' + esc(s.ReportNumber) + '</div>' +
+                '<div><strong>Outlet:</strong> ' + esc(s.OutletNameSnapshot) + ' • <strong>Tanggal:</strong> ' + esc(s.InspectionDate) + '</div>' +
+                '<div><strong>Trainer:</strong> ' + esc(s.TrainerName) + ' • <strong>PIC:</strong> ' + esc(s.PIC_Name) + '</div>' +
+                '<div><strong>AM:</strong> ' + esc(s.AM_Name_Snapshot) + ' • <strong>MUM:</strong> ' + esc(s.MUM_Name_Snapshot) + '</div>' +
+              '</div>' +
+              fHtml;
+
+            var close = window.TM_APP.openModal('Detail Pemeriksaan', html);
+            var root = document.getElementById('modal-root');
+
+            root.querySelectorAll('[data-viewphoto]').forEach(function (btn) {
+              btn.addEventListener('click', function () {
+                var parts = btn.getAttribute('data-viewphoto').split(':');
+                window.TM_PHOTO.openLightboxGallery(fList[parts[0]].Photos, parseInt(parts[1], 10));
+              });
+            });
+
+            root.querySelectorAll('[data-fdel]').forEach(function (btn) {
+              btn.addEventListener('click', function () {
+                var fid = btn.getAttribute('data-fdel');
+                window.TM_APP.promptDialog({
+                  variant: 'danger',
+                  title: 'Hapus Temuan?',
+                  message: 'Temuan ini akan dihapus dari sesi pemeriksaan.',
+                  inputLabel: 'Alasan penghapusan (wajib)',
+                  placeholder: 'Contoh: Temuan salah input',
+                  requiredMessage: 'Alasan penghapusan wajib diisi.',
+                  confirmText: 'Ya, Hapus Temuan'
+                }).then(function (reason) {
+                  if (!reason) return;
+                  window.TM_API.callRpc('api_deleteFinding', window.TM_API.getToken(), fid, reason)
+                    .then(function () {
+                      window.TM_APP.showToast('Temuan dihapus.', 'success');
+                      close();
+                      renderCompletedSessionsView(container);
+                    }).catch(function (err) { window.TM_APP.showToast(err.message, 'error'); });
+                });
+              });
+            });
+
+            root.querySelectorAll('[data-frestore]').forEach(function (btn) {
+              btn.addEventListener('click', function () {
+                window.TM_API.callRpc('api_restoreFinding', window.TM_API.getToken(), btn.getAttribute('data-frestore'))
+                  .then(function () {
+                    window.TM_APP.showToast('Temuan dipulihkan.', 'success');
+                    close();
+                    renderCompletedSessionsView(container);
+                  }).catch(function (err) { window.TM_APP.showToast(err.message, 'error'); });
+              });
+            });
+
+            root.querySelectorAll('[data-fedit]').forEach(function (btn) {
+              btn.addEventListener('click', function () {
+                var fid = btn.getAttribute('data-fedit');
+                var f = fList.find(function (x) { return x.FindingID === fid; });
+                if (!f) return;
+                openEditFindingModal(f, function () {
+                  openSessionDetailModal(sessionId);
+                });
+              });
+            });
+          })
+          .catch(function (err) { window.TM_APP.showToast(err.message, 'error'); });
+      }
+
+      function openEditFindingModal(f, onSaved) {
+        var catOpts = master.active.categories.map(function (c) {
+          return '<option value="' + esc(c.CategoryID) + '"' + (f.CategoryID === c.CategoryID ? ' selected' : '') + '>' + esc(c.CategoryName) + '</option>';
+        }).join('');
+        var secOpts = master.active.sections.map(function (s) {
+          return '<option value="' + esc(s.SectionID) + '"' + (f.SectionID === s.SectionID ? ' selected' : '') + '>' + esc(s.SectionName) + '</option>';
+        }).join('');
+
+        var html =
+          '<div id="ef-alert"></div>' +
+          '<form id="ef-form">' +
+            '<div class="form-group"><label class="form-label">Category</label><select id="ef-cat" class="form-control">' + catOpts + '</select></div>' +
+            '<div class="form-group"><label class="form-label">Section</label><select id="ef-sec" class="form-control">' + secOpts + '</select></div>' +
+            '<div class="form-group"><label class="form-label">Masalah *</label><textarea id="ef-masalah" class="form-control" rows="2" required>' + esc(f.Masalah) + '</textarea></div>' +
+            '<div class="form-group"><label class="form-label">Mengapa *</label><textarea id="ef-mengapa" class="form-control" rows="2" required>' + esc(f.Mengapa) + '</textarea></div>' +
+            '<div class="form-group"><label class="form-label">Solusi</label><textarea id="ef-solusi" class="form-control" rows="2">' + esc(f.Solusi) + '</textarea></div>' +
+            '<div class="modal-footer">' +
+              '<button type="button" class="btn btn-secondary" id="ef-cancel">Batal</button>' +
+              '<button type="submit" class="btn btn-primary" id="ef-save">Simpan Perubahan</button>' +
+            '</div>' +
+          '</form>';
+        var close = window.TM_APP.openModal('Edit Temuan', html);
+        document.getElementById('ef-cancel').addEventListener('click', close);
+        document.getElementById('ef-form').addEventListener('submit', function (e) {
+          e.preventDefault();
+          var btn = document.getElementById('ef-save');
+          btn.disabled = true;
+          window.TM_API.callRpc('api_updateFinding', window.TM_API.getToken(), f.FindingID, {
+            categoryId: document.getElementById('ef-cat').value,
+            sectionId: document.getElementById('ef-sec').value,
+            masalah: document.getElementById('ef-masalah').value,
+            mengapa: document.getElementById('ef-mengapa').value,
+            solusi: document.getElementById('ef-solusi').value
+          }).then(function () {
+            window.TM_APP.showToast('Temuan diperbarui.', 'success');
+            close();
+            if (onSaved) onSaved();
+          }).catch(function (err) {
+            document.getElementById('ef-alert').innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+            btn.disabled = false;
+          });
+        });
+      }
+    }
+
+    return {
+      renderInputView: renderInputView,
+      renderCompletedSessionsView: renderCompletedSessionsView
+    };
+  })();
+</script>

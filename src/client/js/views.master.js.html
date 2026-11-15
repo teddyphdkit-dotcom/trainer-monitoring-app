@@ -1,0 +1,677 @@
+<script>
+  window.TM_VIEWS_MASTER = (function () {
+    function esc(s) {
+      return window.TM_APP.escapeHtml(s);
+    }
+
+    var TABS = [
+      { key: 'CATEGORY', label: 'Category', listKey: 'categories', idField: 'CategoryID', nameField: 'CategoryName' },
+      { key: 'SECTION', label: 'Section', listKey: 'sections', idField: 'SectionID', nameField: 'SectionName' },
+      { key: 'AM', label: 'Master AM', listKey: 'ams', idField: 'AM_ID', nameField: 'AM_Name' },
+      { key: 'MUM', label: 'Master MUM', listKey: 'mums', idField: 'MUM_ID', nameField: 'MUM_Name' }
+    ];
+
+    /* ==================== MASTER DATA (CATEGORY, SECTION, AM, MUM) ==================== */
+    function renderMasterDataView(container) {
+      var activeTab = 'CATEGORY';
+      var bundle = null;
+
+      container.innerHTML =
+        '<div class="card">' +
+          '<div class="card-header">' +
+            '<div>' +
+              '<h2 class="card-title">Master Data Operasional</h2>' +
+              '<p class="form-hint" style="margin:4px 0 0;">Kelola daftar Kategori, Bagian (Section), Area Manager (AM), dan MUM. Data yang dinonaktifkan dapat dihapus secara permanen jika sudah tidak dibutuhkan.</p>' +
+            '</div>' +
+            '<button id="btn-add-master" class="btn btn-primary">+ Tambah Data</button>' +
+          '</div>' +
+          '<div class="tabs-bar" id="master-tabs">' +
+            TABS.map(function (t) {
+              return '<button class="tab-btn' + (t.key === activeTab ? ' active' : '') + '" data-tab="' + t.key + '">' + esc(t.label) + '</button>';
+            }).join('') +
+          '</div>' +
+          '<div class="toolbar">' +
+            '<div class="toolbar-field"><input type="text" id="master-search" class="form-control" placeholder="Cari nama master..."></div>' +
+            '<div>' +
+              '<select id="master-status-filter" class="form-control">' +
+                '<option value="">Semua Status</option>' +
+                '<option value="ACTIVE">Aktif</option>' +
+                '<option value="INACTIVE">Nonaktif</option>' +
+              '</select>' +
+            '</div>' +
+          '</div>' +
+          '<div id="master-list-box"><p class="form-hint">Memuat Master Data...</p></div>' +
+        '</div>';
+
+      function getCurrentTabCfg() {
+        return TABS.find(function (t) { return t.key === activeTab; }) || TABS[0];
+      }
+
+      function loadMaster() {
+        window.TM_API.callRpc('api_getMasterBundle', window.TM_API.getToken())
+          .then(function (data) {
+            bundle = data;
+            drawTable();
+          })
+          .catch(function (err) {
+            document.getElementById('master-list-box').innerHTML =
+              '<div class="alert alert-error">' + esc(err.message) + '</div>';
+          });
+      }
+
+      function drawTable() {
+        if (!bundle) return;
+        var cfg = getCurrentTabCfg();
+        var items = (bundle[cfg.listKey] || []).slice();
+        var q = (document.getElementById('master-search').value || '').trim().toLowerCase();
+        var st = document.getElementById('master-status-filter').value;
+
+        var filtered = items.filter(function (it) {
+          if (st && it.Status !== st) return false;
+          if (q && String(it[cfg.nameField]).toLowerCase().indexOf(q) === -1) return false;
+          return true;
+        });
+
+        var box = document.getElementById('master-list-box');
+        if (filtered.length === 0) {
+          box.innerHTML = '<p class="form-hint">Belum ada data untuk kategori ini.</p>';
+          return;
+        }
+
+        var rows = filtered.map(function (it) {
+          var id = it[cfg.idField];
+          var name = it[cfg.nameField];
+          var isAct = it.Status === 'ACTIVE';
+          return (
+            '<tr>' +
+              '<td><code>' + esc(id) + '</code></td>' +
+              '<td><strong>' + esc(name) + '</strong></td>' +
+              '<td>' + (isAct ? '<span class="badge badge-success">Aktif</span>' : '<span class="badge badge-neutral">Nonaktif</span>') + '</td>' +
+              '<td>' +
+                '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+                  '<button class="btn btn-sm btn-secondary" data-act="edit" data-id="' + esc(id) + '">Ubah Nama</button>' +
+                  '<button class="btn btn-sm ' + (isAct ? 'btn-secondary' : 'btn-primary') + '" data-act="toggle" data-id="' + esc(id) + '">' +
+                    (isAct ? 'Nonaktifkan' : 'Aktifkan') +
+                  '</button>' +
+                  '<button class="btn btn-sm btn-danger" data-act="delete" data-id="' + esc(id) + '">🗑 Hapus</button>' +
+                '</div>' +
+              '</td>' +
+            '</tr>'
+          );
+        }).join('');
+
+        var cards = filtered.map(function (it) {
+          var id = it[cfg.idField];
+          var name = it[cfg.nameField];
+          var isAct = it.Status === 'ACTIVE';
+          return (
+            '<div class="mobile-item-card">' +
+              '<div class="mobile-item-row">' +
+                '<div><strong>' + esc(name) + '</strong><div class="form-hint">' + esc(id) + '</div></div>' +
+                (isAct ? '<span class="badge badge-success">Aktif</span>' : '<span class="badge badge-neutral">Nonaktif</span>') +
+              '</div>' +
+              '<div class="mobile-item-actions">' +
+                '<button class="btn btn-sm btn-secondary" data-act="edit" data-id="' + esc(id) + '">Ubah Nama</button>' +
+                '<button class="btn btn-sm ' + (isAct ? 'btn-secondary' : 'btn-primary') + '" data-act="toggle" data-id="' + esc(id) + '">' +
+                  (isAct ? 'Nonaktifkan' : 'Aktifkan') +
+                '</button>' +
+                '<button class="btn btn-sm btn-danger" data-act="delete" data-id="' + esc(id) + '">🗑 Hapus</button>' +
+              '</div>' +
+            '</div>'
+          );
+        }).join('');
+
+        box.innerHTML =
+          '<div class="table-wrap"><table class="data-table"><thead><tr><th>ID</th><th>Nama</th><th>Status</th><th>Aksi</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+          '<div class="mobile-card-list">' + cards + '</div>';
+
+        box.querySelectorAll('button[data-act]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var act = btn.getAttribute('data-act');
+            var id = btn.getAttribute('data-id');
+            var item = items.find(function (x) { return x[cfg.idField] === id; });
+            if (!item) return;
+            if (act === 'edit') openMasterModal(cfg, item);
+            if (act === 'toggle') toggleMasterStatus(cfg, item);
+            if (act === 'delete') deleteMasterItemPermanent(cfg, item);
+          });
+        });
+      }
+
+      function openMasterModal(cfg, item) {
+        var isEdit = Boolean(item);
+        var html =
+          '<div id="mm-alert"></div>' +
+          '<form id="mm-form">' +
+            '<div class="form-group">' +
+              '<label class="form-label">Nama ' + esc(cfg.label) + '</label>' +
+              '<input type="text" id="mm-name" class="form-control" value="' + esc(isEdit ? item[cfg.nameField] : '') + '" required>' +
+            '</div>' +
+            '<div class="modal-footer">' +
+              '<button type="button" class="btn btn-secondary" id="mm-cancel">Batal</button>' +
+              '<button type="submit" class="btn btn-primary" id="mm-save">Simpan</button>' +
+            '</div>' +
+          '</form>';
+        var close = window.TM_APP.openModal((isEdit ? 'Ubah ' : 'Tambah ') + cfg.label, html);
+        document.getElementById('mm-cancel').addEventListener('click', close);
+        document.getElementById('mm-form').addEventListener('submit', function (e) {
+          e.preventDefault();
+          var btn = document.getElementById('mm-save');
+          btn.disabled = true;
+          btn.textContent = 'Menyimpan...';
+          window.TM_API.callRpc('api_saveMasterItem', window.TM_API.getToken(), cfg.key, {
+            id: isEdit ? item[cfg.idField] : '',
+            name: document.getElementById('mm-name').value
+          }).then(function () {
+            window.TM_APP.showToast('Master data berhasil disimpan.', 'success');
+            close();
+            loadMaster();
+          }).catch(function (err) {
+            document.getElementById('mm-alert').innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+            btn.disabled = false;
+            btn.textContent = 'Simpan';
+          });
+        });
+      }
+
+      function toggleMasterStatus(cfg, item) {
+        var nextStatus = item.Status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
+        var deactivate = nextStatus === 'INACTIVE';
+        window.TM_APP.confirmDialog({
+          variant: deactivate ? 'warning' : 'success',
+          icon: deactivate ? '⏸' : '▶',
+          title: deactivate ? 'Nonaktifkan Data?' : 'Aktifkan Data?',
+          message: deactivate
+            ? 'Data ini tidak akan muncul lagi sebagai pilihan saat input pemeriksaan.'
+            : 'Data ini akan kembali muncul sebagai pilihan saat input pemeriksaan.',
+          highlight: item[cfg.nameField],
+          confirmText: deactivate ? 'Ya, Nonaktifkan' : 'Ya, Aktifkan'
+        }).then(function (ok) {
+          if (!ok) return;
+          window.TM_API.callRpc('api_setMasterStatus', window.TM_API.getToken(), cfg.key, item[cfg.idField], nextStatus)
+            .then(function () {
+              window.TM_APP.showToast('Status diperbarui.', 'success');
+              loadMaster();
+            })
+            .catch(function (err) {
+              window.TM_APP.showToast(err.message, 'error');
+            });
+        });
+      }
+
+      function deleteMasterItemPermanent(cfg, item) {
+        var id = item[cfg.idField];
+        var name = item[cfg.nameField];
+        var isActive = item.Status === 'ACTIVE';
+        window.TM_APP.confirmDialog({
+          variant: 'danger',
+          title: 'Hapus Permanen?',
+          message: isActive
+            ? 'Data ini masih Aktif. Sistem akan menonaktifkan lalu menghapusnya secara permanen.'
+            : 'Data berikut akan dihapus secara permanen dari sistem.',
+          highlight: name,
+          note: 'Data yang sudah dihapus tidak dapat dikembalikan.',
+          confirmText: 'Ya, Hapus'
+        }).then(function (ok) {
+          if (!ok) return;
+          var chain = isActive
+            ? window.TM_API.callRpc('api_setMasterStatus', window.TM_API.getToken(), cfg.key, id, 'INACTIVE')
+            : Promise.resolve();
+          chain
+            .then(function () {
+              return window.TM_API.callRpc('api_deleteMasterItem', window.TM_API.getToken(), cfg.key, id);
+            })
+            .then(function () {
+              window.TM_APP.showToast('Data "' + name + '" berhasil dihapus permanen.', 'success');
+              loadMaster();
+            })
+            .catch(function (err) {
+              window.TM_APP.showToast(err.message, 'error');
+            });
+        });
+      }
+
+      document.getElementById('master-tabs').querySelectorAll('.tab-btn').forEach(function (tabBtn) {
+        tabBtn.addEventListener('click', function () {
+          activeTab = tabBtn.getAttribute('data-tab');
+          document.getElementById('master-tabs').querySelectorAll('.tab-btn').forEach(function (b) {
+            b.classList.toggle('active', b.getAttribute('data-tab') === activeTab);
+          });
+          drawTable();
+        });
+      });
+
+      document.getElementById('btn-add-master').addEventListener('click', function () {
+        openMasterModal(getCurrentTabCfg(), null);
+      });
+      document.getElementById('master-search').addEventListener('input', drawTable);
+      document.getElementById('master-status-filter').addEventListener('change', drawTable);
+
+      loadMaster();
+    }
+
+    /* ==================== MANAJEMEN OUTLET & MERGE ==================== */
+    function renderOutletsView(container) {
+      var outlets = [];
+      var activeTab = 'ACTIVE';
+
+      container.innerHTML =
+        '<div class="card">' +
+          '<div class="card-header">' +
+            '<div>' +
+              '<h2 class="card-title">Manajemen Outlet</h2>' +
+              '<p class="form-hint" style="margin:4px 0 0;">Kelola daftar Outlet, penggabungan nama Outlet ganda, serta penonaktifan atau penghapusan permanen Outlet yang sudah tidak dibutuhkan.</p>' +
+            '</div>' +
+            '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+              '<button id="btn-merge-outlets" class="btn btn-secondary">Gabungkan Outlet Ganda</button>' +
+              '<button id="btn-new-outlet" class="btn btn-primary">+ Tambah Outlet</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="tabs-bar" id="outlet-tabs">' +
+            '<button class="tab-btn active" data-otab="ACTIVE">Daftar Outlet</button>' +
+            '<button class="tab-btn" data-otab="MERGED">Outlet Digabung</button>' +
+          '</div>' +
+          '<div class="toolbar">' +
+            '<div class="toolbar-field"><input type="text" id="outlet-search" class="form-control" placeholder="Cari nama, kode OUT..., atau nama lain..."></div>' +
+            '<div>' +
+              '<select id="outlet-status-filter" class="form-control">' +
+                '<option value="">Semua Status</option>' +
+                '<option value="ACTIVE">Aktif</option>' +
+                '<option value="INACTIVE">Nonaktif</option>' +
+              '</select>' +
+            '</div>' +
+          '</div>' +
+          '<div id="outlets-list-box"><p class="form-hint">Memuat daftar Outlet...</p></div>' +
+        '</div>';
+
+      function loadOutlets() {
+        window.TM_API.callRpc('api_listOutlets', window.TM_API.getToken())
+          .then(function (data) {
+            outlets = data || [];
+            drawOutlets();
+          })
+          .catch(function (err) {
+            document.getElementById('outlets-list-box').innerHTML =
+              '<div class="alert alert-error">' + esc(err.message) + '</div>';
+          });
+      }
+
+      function drawOutlets() {
+        var q = (document.getElementById('outlet-search').value || '').trim().toLowerCase();
+        var stFilterEl = document.getElementById('outlet-status-filter');
+        var stFilter = stFilterEl ? stFilterEl.value : '';
+        var filtered = outlets.filter(function (o) {
+          var isMerged = Boolean(o.MergedIntoOutletID);
+          if (activeTab === 'ACTIVE' && isMerged) return false;
+          if (activeTab === 'MERGED' && !isMerged) return false;
+          if (activeTab === 'ACTIVE' && stFilter && o.Status !== stFilter) return false;
+          if (q) {
+            var aliasStr = (o.Aliases || []).map(function (a) { return a.AliasName; }).join(' ');
+            var hay = (o.OutletCode + ' ' + o.CanonicalName + ' ' + aliasStr + ' ' + (o.MergedIntoName || '')).toLowerCase();
+            if (hay.indexOf(q) === -1) return false;
+          }
+          return true;
+        });
+
+        var box = document.getElementById('outlets-list-box');
+        if (filtered.length === 0) {
+          box.innerHTML = '<p class="form-hint">Tidak ada Outlet pada kategori ini.</p>';
+          return;
+        }
+
+        var rows = filtered.map(function (o) {
+          var aliasBadges = (o.Aliases || []).map(function (a) {
+            return '<span class="badge badge-neutral">' + esc(a.AliasName) + '</span>';
+          }).join(' ');
+          var isAct = o.Status === 'ACTIVE';
+          var statusBadge = o.MergedIntoOutletID
+            ? '<span class="badge badge-warning">Digabung</span>'
+            : (isAct ? '<span class="badge badge-success">Aktif</span>' : '<span class="badge badge-neutral">Nonaktif</span>');
+
+          return (
+            '<tr>' +
+              '<td><code>' + esc(o.OutletCode) + '</code></td>' +
+              '<td><strong>' + esc(o.CanonicalName) + '</strong></td>' +
+              '<td>' + statusBadge + '</td>' +
+              '<td>' + (o.MergedIntoOutletID
+                ? '<span class="badge badge-warning">Digabung ke → ' + esc(o.MergedIntoName || o.MergedIntoOutletID) + '</span>'
+                : (aliasBadges || '<span class="form-hint">—</span>')
+              ) + '</td>' +
+              '<td>' +
+                '<div style="display:flex;gap:6px;flex-wrap:wrap;">' +
+                  (o.MergedIntoOutletID
+                    ? '<button class="btn btn-sm btn-secondary" data-act="unmerge" data-id="' + esc(o.OutletID) + '">Batalkan Gabung</button>' +
+                      '<button class="btn btn-sm btn-danger" data-act="delete" data-id="' + esc(o.OutletID) + '">🗑 Hapus</button>'
+                    : '<button class="btn btn-sm btn-secondary" data-act="rename" data-id="' + esc(o.OutletID) + '">Ubah Nama</button>' +
+                      '<button class="btn btn-sm ' + (isAct ? 'btn-secondary' : 'btn-primary') + '" data-act="toggle" data-id="' + esc(o.OutletID) + '">' + (isAct ? 'Nonaktifkan' : 'Aktifkan') + '</button>' +
+                      '<button class="btn btn-sm btn-danger" data-act="delete" data-id="' + esc(o.OutletID) + '">🗑 Hapus</button>'
+                  ) +
+                '</div>' +
+              '</td>' +
+            '</tr>'
+          );
+        }).join('');
+
+        var cards = filtered.map(function (o) {
+          var isAct = o.Status === 'ACTIVE';
+          return (
+            '<div class="mobile-item-card">' +
+              '<div class="mobile-item-row">' +
+                '<div><strong>' + esc(o.CanonicalName) + '</strong><div class="form-hint">Kode: ' + esc(o.OutletCode) + '</div></div>' +
+                (o.MergedIntoOutletID
+                  ? '<span class="badge badge-warning">Digabung</span>'
+                  : (isAct ? '<span class="badge badge-success">Aktif</span>' : '<span class="badge badge-neutral">Nonaktif</span>')) +
+              '</div>' +
+              (o.MergedIntoOutletID
+                ? '<div class="form-hint">Digabung ke: <strong>' + esc(o.MergedIntoName) + '</strong></div>'
+                : ((o.Aliases && o.Aliases.length) ? '<div class="form-hint">Nama lain: ' + esc(o.Aliases.map(function (a) { return a.AliasName; }).join(', ')) + '</div>' : '')
+              ) +
+              '<div class="mobile-item-actions">' +
+                (o.MergedIntoOutletID
+                  ? '<button class="btn btn-sm btn-secondary" data-act="unmerge" data-id="' + esc(o.OutletID) + '">Batalkan Gabung</button>' +
+                    '<button class="btn btn-sm btn-danger" data-act="delete" data-id="' + esc(o.OutletID) + '">🗑 Hapus</button>'
+                  : '<button class="btn btn-sm btn-secondary" data-act="rename" data-id="' + esc(o.OutletID) + '">Ubah Nama</button>' +
+                    '<button class="btn btn-sm ' + (isAct ? 'btn-secondary' : 'btn-primary') + '" data-act="toggle" data-id="' + esc(o.OutletID) + '">' + (isAct ? 'Nonaktifkan' : 'Aktifkan') + '</button>' +
+                    '<button class="btn btn-sm btn-danger" data-act="delete" data-id="' + esc(o.OutletID) + '">🗑 Hapus</button>'
+                ) +
+              '</div>' +
+            '</div>'
+          );
+        }).join('');
+
+        box.innerHTML =
+          '<div class="table-wrap"><table class="data-table"><thead><tr><th>Kode</th><th>Nama Outlet</th><th>Status</th><th>' + (activeTab === 'MERGED' ? 'Digabung Ke' : 'Nama Lain (Alias)') + '</th><th>Aksi</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+          '<div class="mobile-card-list">' + cards + '</div>';
+
+        box.querySelectorAll('button[data-act]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var act = btn.getAttribute('data-act');
+            var id = btn.getAttribute('data-id');
+            var item = outlets.find(function (x) { return x.OutletID === id; });
+            if (!item) return;
+            if (act === 'rename') openRenameModal(item);
+            if (act === 'unmerge') openUnmergeModal(item);
+            if (act === 'toggle') toggleOutletStatus(item);
+            if (act === 'delete') deleteOutletPermanent(item);
+          });
+        });
+      }
+
+      function toggleOutletStatus(item) {
+        var nextStatus = item.Status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
+        var deactivate = nextStatus === 'INACTIVE';
+        window.TM_APP.confirmDialog({
+          variant: deactivate ? 'warning' : 'success',
+          icon: deactivate ? '⏸' : '▶',
+          title: deactivate ? 'Nonaktifkan Outlet?' : 'Aktifkan Outlet?',
+          message: deactivate
+            ? 'Outlet ini tidak akan muncul lagi sebagai pilihan saat input pemeriksaan.'
+            : 'Outlet ini akan kembali bisa dipilih saat input pemeriksaan.',
+          highlight: item.CanonicalName + ' (' + item.OutletCode + ')',
+          confirmText: deactivate ? 'Ya, Nonaktifkan' : 'Ya, Aktifkan'
+        }).then(function (ok) {
+          if (!ok) return;
+          window.TM_API.callRpc('api_setOutletStatus', window.TM_API.getToken(), item.OutletID, nextStatus)
+            .then(function () {
+              window.TM_APP.showToast('Status Outlet diperbarui.', 'success');
+              loadOutlets();
+            })
+            .catch(function (err) {
+              window.TM_APP.showToast(err.message, 'error');
+            });
+        });
+      }
+
+      function deleteOutletPermanent(item) {
+        var isActive = item.Status === 'ACTIVE' && !item.MergedIntoOutletID;
+        window.TM_APP.confirmDialog({
+          variant: 'danger',
+          title: 'Hapus Outlet Permanen?',
+          message: isActive
+            ? 'Outlet ini masih Aktif. Sistem akan menonaktifkan lalu menghapusnya secara permanen.'
+            : 'Outlet berikut akan dihapus secara permanen dari sistem.',
+          highlight: item.CanonicalName + ' (' + item.OutletCode + ')',
+          note: 'Data Outlet yang sudah dihapus tidak dapat dikembalikan.',
+          confirmText: 'Ya, Hapus'
+        }).then(function (ok) {
+          if (!ok) return;
+          var chain = isActive
+            ? window.TM_API.callRpc('api_setOutletStatus', window.TM_API.getToken(), item.OutletID, 'INACTIVE')
+            : Promise.resolve();
+          chain
+            .then(function () {
+              return window.TM_API.callRpc('api_deleteOutlet', window.TM_API.getToken(), item.OutletID);
+            })
+            .then(function () {
+              window.TM_APP.showToast('Outlet "' + item.CanonicalName + '" berhasil dihapus permanen.', 'success');
+              loadOutlets();
+            })
+            .catch(function (err) {
+              window.TM_APP.showToast(err.message, 'error');
+            });
+        });
+      }
+
+      function openCreateOutletModal() {
+        var html =
+          '<div id="om-alert"></div>' +
+          '<form id="om-form">' +
+            '<div class="form-group">' +
+              '<label class="form-label">Nama Outlet</label>' +
+              '<input type="text" id="om-name" class="form-control" placeholder="Contoh: Outlet Kemang Raya" required>' +
+              '<span class="form-hint">Spasi berlebih akan dinormalisasi dan sistem memeriksa kemungkinan duplikat.</span>' +
+            '</div>' +
+            '<div id="om-suggestions" style="margin-bottom:12px;"></div>' +
+            '<div class="modal-footer">' +
+              '<button type="button" class="btn btn-secondary" id="om-cancel">Batal</button>' +
+              '<button type="submit" class="btn btn-primary" id="om-save">Simpan Outlet</button>' +
+            '</div>' +
+          '</form>';
+        var close = window.TM_APP.openModal('Tambah Outlet Baru', html);
+        document.getElementById('om-cancel').addEventListener('click', close);
+
+        var timer = null;
+        document.getElementById('om-name').addEventListener('input', function (e) {
+          clearTimeout(timer);
+          var val = e.target.value;
+          if (!val || val.trim().length < 2) {
+            document.getElementById('om-suggestions').innerHTML = '';
+            return;
+          }
+          timer = setTimeout(function () {
+            window.TM_API.callRpc('api_suggestOutlets', window.TM_API.getToken(), val)
+              .then(function (sugs) {
+                var box = document.getElementById('om-suggestions');
+                if (!box) return;
+                if (!sugs || sugs.length === 0) {
+                  box.innerHTML = '<span class="form-hint">Tidak ditemukan Outlet serupa.</span>';
+                  return;
+                }
+                box.innerHTML =
+                  '<div class="alert alert-warning" style="margin:0;">' +
+                    '<strong>Kemungkinan Outlet sudah ada:</strong>' +
+                    '<ul style="margin:6px 0 0;padding-left:18px;">' +
+                      sugs.slice(0, 4).map(function (s) {
+                        return '<li><code>' + esc(s.OutletCode) + '</code> ' + esc(s.CanonicalName) + ' (' + Math.round(s.score * 100) + '%)</li>';
+                      }).join('') +
+                    '</ul>' +
+                  '</div>';
+              }).catch(function () {});
+          }, 250);
+        });
+
+        document.getElementById('om-form').addEventListener('submit', function (e) {
+          e.preventDefault();
+          var btn = document.getElementById('om-save');
+          btn.disabled = true;
+          btn.textContent = 'Memproses...';
+          window.TM_API.callRpc('api_resolveOrCreateOutlet', window.TM_API.getToken(), document.getElementById('om-name').value)
+            .then(function (res) {
+              window.TM_APP.showToast(
+                res.created
+                  ? 'Outlet baru dibuat: ' + res.outlet.CanonicalName + ' (' + res.outlet.OutletCode + ')'
+                  : 'Menggunakan Outlet yang sudah ada: ' + res.outlet.CanonicalName,
+                'success'
+              );
+              close();
+              loadOutlets();
+            })
+            .catch(function (err) {
+              document.getElementById('om-alert').innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+              btn.disabled = false;
+              btn.textContent = 'Simpan Outlet';
+            });
+        });
+      }
+
+      function openRenameModal(item) {
+        var html =
+          '<div id="or-alert"></div>' +
+          '<form id="or-form">' +
+            '<div class="form-group">' +
+              '<label class="form-label">Nama Outlet (' + esc(item.OutletCode) + ')</label>' +
+              '<input type="text" id="or-name" class="form-control" value="' + esc(item.CanonicalName) + '" required>' +
+            '</div>' +
+            '<div class="modal-footer">' +
+              '<button type="button" class="btn btn-secondary" id="or-cancel">Batal</button>' +
+              '<button type="submit" class="btn btn-primary" id="or-save">Simpan</button>' +
+            '</div>' +
+          '</form>';
+        var close = window.TM_APP.openModal('Ubah Nama Outlet', html);
+        document.getElementById('or-cancel').addEventListener('click', close);
+        document.getElementById('or-form').addEventListener('submit', function (e) {
+          e.preventDefault();
+          var btn = document.getElementById('or-save');
+          btn.disabled = true;
+          window.TM_API.callRpc('api_updateOutlet', window.TM_API.getToken(), item.OutletID, {
+            canonicalName: document.getElementById('or-name').value
+          }).then(function () {
+            window.TM_APP.showToast('Nama Outlet diperbarui.', 'success');
+            close();
+            loadOutlets();
+          }).catch(function (err) {
+            document.getElementById('or-alert').innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+            btn.disabled = false;
+          });
+        });
+      }
+
+      function openMergeModal() {
+        var activeOutlets = outlets.filter(function (o) { return o.Status === 'ACTIVE' && !o.MergedIntoOutletID; });
+        if (activeOutlets.length < 2) {
+          window.TM_APP.showToast('Minimal dibutuhkan 2 Outlet aktif untuk digabungkan.', 'error');
+          return;
+        }
+        var optionsHtml = activeOutlets.map(function (o) {
+          return '<option value="' + esc(o.OutletID) + '">' + esc(o.OutletCode + ' — ' + o.CanonicalName) + '</option>';
+        }).join('');
+        var checkHtml = activeOutlets.map(function (o) {
+          return (
+            '<label style="display:flex;align-items:center;gap:8px;padding:6px 0;cursor:pointer;">' +
+              '<input type="checkbox" class="merge-dup-cb" value="' + esc(o.OutletID) + '"> ' +
+              '<span><code>' + esc(o.OutletCode) + '</code> ' + esc(o.CanonicalName) + '</span>' +
+            '</label>'
+          );
+        }).join('');
+
+        var html =
+          '<div id="mg-alert"></div>' +
+          '<form id="mg-form">' +
+            '<div class="form-group">' +
+              '<label class="form-label">Outlet Utama (Tujuan Penggabungan)</label>' +
+              '<select id="mg-primary" class="form-control">' + optionsHtml + '</select>' +
+            '</div>' +
+            '<div class="form-group">' +
+              '<label class="form-label">Pilih Outlet Duplikat yang Akan Digabung</label>' +
+              '<div style="max-height:180px;overflow-y:auto;border:1px solid var(--border-color);border-radius:8px;padding:8px 12px;">' + checkHtml + '</div>' +
+            '</div>' +
+            '<div class="form-group">' +
+              '<label class="form-label">Alasan Penggabungan (Wajib)</label>' +
+              '<input type="text" id="mg-reason" class="form-control" placeholder="Contoh: Penulisan nama duplikat" required>' +
+            '</div>' +
+            '<div class="modal-footer">' +
+              '<button type="button" class="btn btn-secondary" id="mg-cancel">Batal</button>' +
+              '<button type="submit" class="btn btn-primary" id="mg-save">Gabungkan Outlet</button>' +
+            '</div>' +
+          '</form>';
+
+        var close = window.TM_APP.openModal('Gabungkan Outlet Ganda', html);
+        document.getElementById('mg-cancel').addEventListener('click', close);
+        document.getElementById('mg-form').addEventListener('submit', function (e) {
+          e.preventDefault();
+          var primaryId = document.getElementById('mg-primary').value;
+          var dupIds = Array.prototype.slice.call(document.querySelectorAll('.merge-dup-cb:checked')).map(function (cb) {
+            return cb.value;
+          });
+          var btn = document.getElementById('mg-save');
+          btn.disabled = true;
+          window.TM_API.callRpc('api_mergeOutlets', window.TM_API.getToken(), primaryId, dupIds, document.getElementById('mg-reason').value)
+            .then(function () {
+              window.TM_APP.showToast('Merge Outlet berhasil.', 'success');
+              close();
+              loadOutlets();
+            })
+            .catch(function (err) {
+              document.getElementById('mg-alert').innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+              btn.disabled = false;
+            });
+        });
+      }
+
+      function openUnmergeModal(item) {
+        var html =
+          '<p>Batalkan merge untuk <strong>' + esc(item.CanonicalName) + ' (' + esc(item.OutletCode) + ')</strong> dari Outlet utama <strong>' + esc(item.MergedIntoName) + '</strong>?</p>' +
+          '<div id="umg-alert"></div>' +
+          '<form id="umg-form">' +
+            '<div class="form-group">' +
+              '<label class="form-label">Alasan Pembatalan Merge (Wajib)</label>' +
+              '<input type="text" id="umg-reason" class="form-control" required>' +
+            '</div>' +
+            '<div class="modal-footer">' +
+              '<button type="button" class="btn btn-secondary" id="umg-cancel">Batal</button>' +
+              '<button type="submit" class="btn btn-danger" id="umg-save">Batalkan Merge</button>' +
+            '</div>' +
+          '</form>';
+        var close = window.TM_APP.openModal('Batalkan Merge Outlet', html);
+        document.getElementById('umg-cancel').addEventListener('click', close);
+        document.getElementById('umg-form').addEventListener('submit', function (e) {
+          e.preventDefault();
+          var btn = document.getElementById('umg-save');
+          btn.disabled = true;
+          window.TM_API.callRpc('api_unmergeOutlet', window.TM_API.getToken(), item.OutletID, document.getElementById('umg-reason').value)
+            .then(function () {
+              window.TM_APP.showToast('Merge berhasil dibatalkan.', 'success');
+              close();
+              loadOutlets();
+            })
+            .catch(function (err) {
+              document.getElementById('umg-alert').innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+              btn.disabled = false;
+            });
+        });
+      }
+
+      document.getElementById('outlet-tabs').querySelectorAll('.tab-btn').forEach(function (tabBtn) {
+        tabBtn.addEventListener('click', function () {
+          activeTab = tabBtn.getAttribute('data-otab');
+          document.getElementById('outlet-tabs').querySelectorAll('.tab-btn').forEach(function (b) {
+            b.classList.toggle('active', b.getAttribute('data-otab') === activeTab);
+          });
+          drawOutlets();
+        });
+      });
+
+      document.getElementById('btn-new-outlet').addEventListener('click', openCreateOutletModal);
+      document.getElementById('btn-merge-outlets').addEventListener('click', openMergeModal);
+      document.getElementById('outlet-search').addEventListener('input', drawOutlets);
+      document.getElementById('outlet-status-filter').addEventListener('change', drawOutlets);
+
+      loadOutlets();
+    }
+
+    return {
+      renderMasterDataView: renderMasterDataView,
+      renderOutletsView: renderOutletsView
+    };
+  })();
+</script>

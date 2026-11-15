@@ -1,0 +1,20 @@
+{
+  "name": "trainer-monitoring-app",
+  "version": "1.0.0",
+  "description": "Trainer Monitoring Web App (Google Apps Script, Google Sheets, Google Drive)",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "clasp:login": "npx clasp login",
+    "clasp:push": "npx clasp push",
+    "clasp:pull": "npx clasp pull",
+    "clasp:open": "npx clasp open",
+    "clasp:deploy": "npx clasp deploy"
+  },
+  "devDependencies": {
+    "@google/clasp": "^2.4.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

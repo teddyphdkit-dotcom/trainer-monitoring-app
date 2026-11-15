@@ -1,0 +1,10 @@
+**/**
+!appsscript.json
+!server/**
+!server/**/*.gs
+!client/**
+!client/**/*.html
+node_modules/**
+tests/**
+.git/**
+*.md

@@ -1,0 +1,192 @@
+<script>
+  window.TM_PHOTO = (function () {
+    var MAX_RAW_BYTES = 5 * 1024 * 1024;
+    var MAX_COMPRESSED_BYTES = 1 * 1024 * 1024;
+    var ALLOWED_TYPES = ['image/jpeg', 'image/jpg', 'image/png'];
+
+    function esc(s) {
+      return window.TM_APP.escapeHtml(s);
+    }
+
+    function dataUrlToByteLength(dataUrl) {
+      var b64 = String(dataUrl).split(',')[1] || '';
+      return Math.floor((b64.length * 3) / 4);
+    }
+
+    function loadBitmapWithOrientation(file) {
+      if (typeof createImageBitmap === 'function') {
+        return createImageBitmap(file, { imageOrientation: 'from-image' }).catch(function () {
+          return createImageBitmap(file);
+        });
+      }
+      return new Promise(function (resolve, reject) {
+        var img = new Image();
+        var url = URL.createObjectURL(file);
+        img.onload = function () {
+          URL.revokeObjectURL(url);
+          resolve(img);
+        };
+        img.onerror = function (err) {
+          URL.revokeObjectURL(url);
+          reject(err);
+        };
+        img.src = url;
+      });
+    }
+
+    function compressImageFile(file) {
+      if (!file) return Promise.reject(new Error('File foto tidak ditemukan.'));
+      var mime = String(file.type || '').toLowerCase();
+      if (ALLOWED_TYPES.indexOf(mime) === -1) {
+        return Promise.reject(new Error('Format foto harus JPG, JPEG, atau PNG.'));
+      }
+      if (file.size > MAX_RAW_BYTES) {
+        return Promise.reject(new Error('Ukuran file asli maksimal 5 MB (' + (file.size / 1024 / 1024).toFixed(2) + ' MB).'));
+      }
+
+      return loadBitmapWithOrientation(file).then(function (imgSource) {
+        var origW = imgSource.width || imgSource.naturalWidth;
+        var origH = imgSource.height || imgSource.naturalHeight;
+        var maxDim = 1600;
+        var scale = Math.min(1, maxDim / Math.max(origW, origH));
+        var w = Math.max(1, Math.round(origW * scale));
+        var h = Math.max(1, Math.round(origH * scale));
+
+        var canvas = document.createElement('canvas');
+        var ctx = canvas.getContext('2d');
+        var qualities = [0.85, 0.72, 0.58, 0.45, 0.35];
+        var outMime = 'image/jpeg';
+        var resultUrl = '';
+
+        for (var attempt = 0; attempt < 3; attempt++) {
+          canvas.width = w;
+          canvas.height = h;
+          ctx.clearRect(0, 0, w, h);
+          ctx.drawImage(imgSource, 0, 0, w, h);
+
+          for (var qIdx = 0; qIdx < qualities.length; qIdx++) {
+            resultUrl = canvas.toDataURL(outMime, qualities[qIdx]);
+            if (dataUrlToByteLength(resultUrl) <= MAX_COMPRESSED_BYTES) {
+              if (typeof imgSource.close === 'function') imgSource.close();
+              return {
+                fileName: file.name.replace(/\.[^.]+$/, '') + '.jpg',
+                mimeType: outMime,
+                base64Data: resultUrl,
+                byteSize: dataUrlToByteLength(resultUrl)
+              };
+            }
+          }
+          w = Math.max(320, Math.round(w * 0.75));
+          h = Math.max(240, Math.round(h * 0.75));
+        }
+
+        if (typeof imgSource.close === 'function') imgSource.close();
+        throw new Error('Gagal mengompresi foto di bawah batas 1 MB.');
+      });
+    }
+
+    function openLightboxGallery(photoItems, startIndex) {
+      if (!photoItems || photoItems.length === 0) return;
+      var idx = Math.max(0, Math.min(startIndex || 0, photoItems.length - 1));
+      var zoom = 1;
+
+      var html =
+        '<div id="lb-body">' +
+          '<div class="lightbox-img-wrap" id="lb-img-wrap"><span class="spinner"></span></div>' +
+          '<div id="lb-caption" style="margin-top:10px;font-size:13px;color:var(--text-secondary);"></div>' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px;">' +
+            '<div style="display:flex;gap:6px;">' +
+              '<button type="button" class="btn btn-sm btn-secondary" id="lb-prev">← Prev</button>' +
+              '<button type="button" class="btn btn-sm btn-secondary" id="lb-next">Next →</button>' +
+            '</div>' +
+            '<div style="display:flex;gap:6px;">' +
+              '<button type="button" class="btn btn-sm btn-secondary" id="lb-zoom-out">−</button>' +
+              '<button type="button" class="btn btn-sm btn-secondary" id="lb-zoom-reset">100%</button>' +
+              '<button type="button" class="btn btn-sm btn-secondary" id="lb-zoom-in">+</button>' +
+              '<button type="button" class="btn btn-sm btn-primary" id="lb-download">Unduh</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+
+      window.TM_APP.openModal('Galeri Foto Bukti', html);
+
+      function renderSlide() {
+        zoom = 1;
+        var item = photoItems[idx];
+        var wrap = document.getElementById('lb-img-wrap');
+        var cap = document.getElementById('lb-caption');
+        if (!wrap || !cap) return;
+        cap.textContent = '(' + (idx + 1) + '/' + photoItems.length + ') ' + (item.PhotoComment || item.comment || 'Tanpa komentar');
+
+        if (item.dataUrl || item.base64Data) {
+          var src = item.dataUrl || item.base64Data;
+          wrap.innerHTML = '<img id="lb-img" src="' + esc(src) + '" alt="Foto Bukti">';
+        } else {
+          wrap.innerHTML = '<span class="spinner"></span>';
+          window.TM_API.callRpc('api_getPhotoData', window.TM_API.getToken(), item.PhotoID, false)
+            .then(function (data) {
+              item.dataUrl = data.dataUrl;
+              var curWrap = document.getElementById('lb-img-wrap');
+              if (curWrap) curWrap.innerHTML = '<img id="lb-img" src="' + esc(data.dataUrl) + '" alt="Foto Bukti">';
+            })
+            .catch(function (err) {
+              var curWrap = document.getElementById('lb-img-wrap');
+              if (curWrap) curWrap.innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+            });
+        }
+      }
+
+      function applyZoom() {
+        var img = document.getElementById('lb-img');
+        if (img) img.style.transform = 'scale(' + zoom + ')';
+        var zBtn = document.getElementById('lb-zoom-reset');
+        if (zBtn) zBtn.textContent = Math.round(zoom * 100) + '%';
+      }
+
+      document.getElementById('lb-prev').addEventListener('click', function () {
+        idx = (idx - 1 + photoItems.length) % photoItems.length;
+        renderSlide();
+      });
+      document.getElementById('lb-next').addEventListener('click', function () {
+        idx = (idx + 1) % photoItems.length;
+        renderSlide();
+      });
+      document.getElementById('lb-zoom-in').addEventListener('click', function () {
+        zoom = Math.min(3, zoom + 0.25);
+        applyZoom();
+      });
+      document.getElementById('lb-zoom-out').addEventListener('click', function () {
+        zoom = Math.max(0.5, zoom - 0.25);
+        applyZoom();
+      });
+      document.getElementById('lb-zoom-reset').addEventListener('click', function () {
+        zoom = 1;
+        applyZoom();
+      });
+      document.getElementById('lb-download').addEventListener('click', function () {
+        var item = photoItems[idx];
+        var dlPromise = item.PhotoID
+          ? window.TM_API.callRpc('api_getPhotoData', window.TM_API.getToken(), item.PhotoID, true)
+          : Promise.resolve({ dataUrl: item.dataUrl || item.base64Data, FileName: item.FileName || 'foto-bukti.jpg' });
+
+        dlPromise.then(function (d) {
+          var a = document.createElement('a');
+          a.href = d.dataUrl;
+          a.download = d.FileName || 'foto-bukti.jpg';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        }).catch(function (err) {
+          window.TM_APP.showToast(err.message, 'error');
+        });
+      });
+
+      renderSlide();
+    }
+
+    return {
+      compressImageFile: compressImageFile,
+      openLightboxGallery: openLightboxGallery
+    };
+  })();
+</script>

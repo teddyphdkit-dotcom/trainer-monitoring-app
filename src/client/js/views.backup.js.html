@@ -1,0 +1,330 @@
+<script>
+  window.TM_VIEWS_BACKUP = (function () {
+    function esc(s) {
+      return window.TM_APP.escapeHtml(s);
+    }
+
+    function formatBytes(bytes) {
+      var n = Number(bytes || 0);
+      if (n < 1024) return n + ' B';
+      if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+      return (n / 1048576).toFixed(2) + ' MB';
+    }
+
+    function renderBackupAndArchiveView(container) {
+      var activeTab = 'BACKUPS'; // BACKUPS | PHOTO_ARCHIVE
+
+      function drawShell() {
+        container.innerHTML =
+          '<div class="tabs-bar" id="bkp-tabs">' +
+            '<button class="tab-btn' + (activeTab === 'BACKUPS' ? ' active' : '') + '" data-btab="BACKUPS">1. Backup &amp; Safe Restore</button>' +
+            '<button class="tab-btn' + (activeTab === 'PHOTO_ARCHIVE' ? ' active' : '') + '" data-btab="PHOTO_ARCHIVE">2. Arsip Foto &amp; Purge Manual</button>' +
+          '</div>' +
+          '<div id="bkp-body"><p class="form-hint">Memuat...</p></div>';
+
+        container.querySelectorAll('#bkp-tabs .tab-btn').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            activeTab = btn.getAttribute('data-btab');
+            drawShell();
+          });
+        });
+
+        var body = document.getElementById('bkp-body');
+        if (activeTab === 'BACKUPS') renderBackupsTab(body);
+        else renderPhotoArchiveTab(body);
+      }
+
+      function renderBackupsTab(body) {
+        window.TM_API.callRpc('api_listBackups', window.TM_API.getToken())
+          .then(function (res) {
+            var items = res.items || [];
+            var retentionDays = res.retentionDays || 90;
+
+            var rowsHtml = items.length === 0
+              ? '<tr><td colspan="7">Belum ada riwayat backup.</td></tr>'
+              : items.map(function (b) {
+                  var isImp = String(b.Important).toUpperCase() === 'TRUE';
+                  var stBadge = b.Status === 'Berhasil'
+                    ? '<span class="badge badge-success">Berhasil</span>'
+                    : (b.Status === 'EXPIRED_CLEANED'
+                      ? '<span class="badge badge-neutral">Dibersihkan (&gt;' + retentionDays + 'h)</span>'
+                      : '<span class="badge badge-danger">' + esc(b.Status) + '</span>');
+
+                  return (
+                    '<tr>' +
+                      '<td><code>' + esc(b.BackupID) + '</code></td>' +
+                      '<td>' + esc(b.BackupDate) + '</td>' +
+                      '<td><span class="badge badge-neutral">' + esc(b.BackupType) + '</span></td>' +
+                      '<td>' + stBadge + '</td>' +
+                      '<td>' + esc(formatBytes(b.Size)) + '</td>' +
+                      '<td>' +
+                        '<label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">' +
+                          '<input type="checkbox" data-bimp="' + esc(b.BackupID) + '"' + (isImp ? ' checked' : '') + '>' +
+                          (isImp ? '<span class="badge badge-warning">Important</span>' : '<span class="form-hint">Standar</span>') +
+                        '</label>' +
+                      '</td>' +
+                      '<td>' +
+                        '<div style="font-size:12px;margin-bottom:4px;">' + esc(b.Result) + '</div>' +
+                        (b.Status === 'Berhasil'
+                          ? '<button class="btn btn-sm btn-primary" data-brestore="' + esc(b.BackupID) + '">🔄 Safe Restore</button>'
+                          : '') +
+                      '</td>' +
+                    '</tr>'
+                  );
+                }).join('');
+
+            body.innerHTML =
+              '<div class="card">' +
+                '<div class="card-header">' +
+                  '<div>' +
+                    '<h2 class="card-title">Manajemen Backup &amp; Safe Restore</h2>' +
+                    '<p class="form-hint" style="margin:4px 0 0;">Retensi backup otomatis: ' + retentionDays + ' hari. Backup berlabel <strong>Important</strong> dilindungi dari pembersihan otomatis.</p>' +
+                  '</div>' +
+                  '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+                    '<button type="button" class="btn btn-sm btn-secondary" id="btn-run-daily-bkp">⏱️ Backup Harian &amp; Bersihkan Retensi</button>' +
+                    '<button type="button" class="btn btn-sm btn-primary" id="btn-new-manual-bkp">+ Buat Backup Manual</button>' +
+                  '</div>' +
+                '</div>' +
+                '<div class="table-wrap">' +
+                  '<table class="data-table">' +
+                    '<thead><tr><th>ID Backup</th><th>Waktu</th><th>Jenis</th><th>Status</th><th>Ukuran</th><th>Label Important</th><th>Hasil &amp; Aksi</th></tr></thead>' +
+                    '<tbody>' + rowsHtml + '</tbody>' +
+                  '</table>' +
+                '</div>' +
+              '</div>';
+
+            document.getElementById('btn-new-manual-bkp').addEventListener('click', function () {
+              openCreateManualBackupModal(function () { renderBackupsTab(body); });
+            });
+
+            document.getElementById('btn-run-daily-bkp').addEventListener('click', function () {
+              var btn = document.getElementById('btn-run-daily-bkp');
+              btn.disabled = true;
+              window.TM_API.callRpc('api_runDailyAutomatedBackup', window.TM_API.getToken())
+                .then(function (r) {
+                  window.TM_APP.showToast(
+                    'Backup harian selesai (' + r.backup.BackupID + '). Dibersihkan: ' + r.expiredCleanedCount + ' backup lama.',
+                    'success'
+                  );
+                  renderBackupsTab(body);
+                })
+                .catch(function (err) {
+                  window.TM_APP.showToast(err.message, 'error');
+                  btn.disabled = false;
+                });
+            });
+
+            body.querySelectorAll('[data-bimp]').forEach(function (cb) {
+              cb.addEventListener('change', function () {
+                var bid = cb.getAttribute('data-bimp');
+                window.TM_API.callRpc('api_toggleBackupImportant', window.TM_API.getToken(), bid, cb.checked)
+                  .then(function () {
+                    window.TM_APP.showToast('Label Important diperbarui.', 'success');
+                    renderBackupsTab(body);
+                  })
+                  .catch(function (err) {
+                    window.TM_APP.showToast(err.message, 'error');
+                    renderBackupsTab(body);
+                  });
+              });
+            });
+
+            body.querySelectorAll('[data-brestore]').forEach(function (btn) {
+              btn.addEventListener('click', function () {
+                openSafeRestoreModal(btn.getAttribute('data-brestore'), function () {
+                  renderBackupsTab(body);
+                });
+              });
+            });
+          })
+          .catch(function (err) {
+            body.innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+          });
+      }
+
+      function openCreateManualBackupModal(onDone) {
+        var html =
+          '<form id="mbkp-form">' +
+            '<div class="form-group">' +
+              '<label class="form-label">Keterangan / Catatan Backup</label>' +
+              '<input type="text" id="mbkp-desc" class="form-control" placeholder="Contoh: Sebelum penyesuaian Master Data Q4">' +
+            '</div>' +
+            '<div class="form-group">' +
+              '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;">' +
+                '<input type="checkbox" id="mbkp-imp"> <strong>Tandai sebagai Backup Important</strong> (tidak ikut pembersihan otomatis 90 hari)' +
+              '</label>' +
+            '</div>' +
+            '<div class="modal-footer">' +
+              '<button type="button" class="btn btn-secondary" id="mbkp-cancel">Batal</button>' +
+              '<button type="submit" class="btn btn-primary" id="mbkp-submit">Jalankan Backup</button>' +
+            '</div>' +
+          '</form>';
+        var close = window.TM_APP.openModal('Buat Backup Manual', html);
+        document.getElementById('mbkp-cancel').addEventListener('click', close);
+        document.getElementById('mbkp-form').addEventListener('submit', function (e) {
+          e.preventDefault();
+          var btn = document.getElementById('mbkp-submit');
+          btn.disabled = true;
+          window.TM_API.callRpc('api_createManualBackup', window.TM_API.getToken(), {
+            description: document.getElementById('mbkp-desc').value,
+            important: document.getElementById('mbkp-imp').checked
+          }).then(function (r) {
+            window.TM_APP.showToast('Backup manual berhasil dibuat: ' + r.backup.BackupID, 'success');
+            close();
+            if (onDone) onDone();
+          }).catch(function (err) {
+            window.TM_APP.showToast(err.message, 'error');
+            btn.disabled = false;
+          });
+        });
+      }
+
+      function openSafeRestoreModal(backupId, onRestored) {
+        window.TM_APP.openModal('Safe Restore (8 Langkah Terproteksi)', '<p class="form-hint">Memuat ringkasan paket backup...</p>');
+        window.TM_API.callRpc('api_getBackupSummaryForRestore', window.TM_API.getToken(), backupId)
+          .then(function (info) {
+            var root = document.getElementById('modal-root');
+            if (!root) return;
+            var bodyBox = root.querySelector('.modal-dialog > div:last-child');
+            if (!bodyBox) return;
+            var s = info.summary || {};
+
+            bodyBox.innerHTML =
+              '<div id="sr-alert"></div>' +
+              '<div class="alert alert-warning">' +
+                '<strong>Prosedur 8 Langkah Safe Restore:</strong>' +
+                '<ol style="margin:6px 0 0;padding-left:18px;font-size:12.5px;">' +
+                  '<li>Menampilkan tanggal &amp; ringkasan backup di bawah ini</li>' +
+                  '<li>Membuat <strong>Pre-Restore Backup</strong> secara otomatis sebelum perubahan</li>' +
+                  '<li>Memverifikasi konfirmasi eksplisit Super Admin</li>' +
+                  '<li>Memvalidasi integritas struktur data &amp; versi skema</li>' +
+                  '<li>Memvalidasi keutuhan relasi antar tabel &amp; referensi foto Drive</li>' +
+                  '<li>Menjalankan pemulihan dengan penguncian transaksi (ScriptLock)</li>' +
+                  '<li>Melakukan <strong>rollback otomatis</strong> ke Pre-Restore Backup bila terjadi kegagalan</li>' +
+                  '<li>Mencatat seluruh jejak pada Audit Log secara append-only</li>' +
+                '</ol>' +
+              '</div>' +
+              '<div class="card" style="background:var(--bg-app);margin-bottom:12px;font-size:13px;">' +
+                '<div><strong>ID Backup:</strong> <code>' + esc(info.backupId) + '</code> (' + esc(info.backupType) + ')</div>' +
+                '<div><strong>Tanggal Backup:</strong> ' + esc(info.backupDate) + '</div>' +
+                '<div><strong>Ringkasan Isi:</strong> ' +
+                  (s.usersCount || 0) + ' Pengguna • ' +
+                  (s.outletsCount || 0) + ' Outlet • ' +
+                  (s.sessionsCount || 0) + ' Sesi • ' +
+                  (s.findingsCount || 0) + ' Temuan • ' +
+                  (s.photosCount || 0) + ' Foto' +
+                '</div>' +
+              '</div>' +
+              '<div class="form-group">' +
+                '<label class="form-label">Ketik <code>RESTORE</code> untuk mengonfirmasi pemulihan *</label>' +
+                '<input type="text" id="sr-confirm-input" class="form-control" placeholder="RESTORE">' +
+              '</div>' +
+              '<div class="modal-footer">' +
+                '<button type="button" class="btn btn-primary" id="btn-exec-safe-restore">Jalankan Safe Restore Sekarang</button>' +
+              '</div>';
+
+            document.getElementById('btn-exec-safe-restore').addEventListener('click', function () {
+              var txt = document.getElementById('sr-confirm-input').value;
+              var btn = document.getElementById('btn-exec-safe-restore');
+              btn.disabled = true;
+              window.TM_API.callRpc('api_executeSafeRestore', window.TM_API.getToken(), backupId, {
+                confirmRestore: true,
+                confirmationText: txt
+              }).then(function (res) {
+                window.TM_APP.showToast('Safe Restore berhasil! Pre-restore backup: ' + res.preRestoreBackupId, 'success');
+                document.getElementById('modal-root').innerHTML = '';
+                if (onRestored) onRestored();
+              }).catch(function (err) {
+                document.getElementById('sr-alert').innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+                btn.disabled = false;
+              });
+            });
+          })
+          .catch(function (err) {
+            window.TM_APP.showToast(err.message, 'error');
+          });
+      }
+
+      function renderPhotoArchiveTab(body) {
+        window.TM_API.callRpc('api_listArchivedPhotos', window.TM_API.getToken())
+          .then(function (photos) {
+            var rowsHtml = (!photos || photos.length === 0)
+              ? '<tr><td colspan="6">Tidak ada foto arsip (dari temuan atau sesi yang dihapus).</td></tr>'
+              : photos.map(function (p) {
+                  var statusCell = p.PurgedAt
+                    ? '<span class="badge badge-neutral">Telah Di-Purge (' + esc(p.PurgedAt) + ')</span><div class="form-hint">Alasan: ' + esc(p.PurgeReason) + '</div>'
+                    : (p.ReferencedByRetainedBackups && p.ReferencedByRetainedBackups.length > 0
+                      ? '<span class="badge badge-warning">Ditahan oleh Backup Aktif/Important</span><div class="form-hint">Ref: ' + esc(p.ReferencedByRetainedBackups.join(', ')) + '</div>'
+                      : '<span class="badge badge-primary">Siap Purge Manual</span>');
+
+                  return (
+                    '<tr>' +
+                      '<td><code>' + esc(p.PhotoID) + '</code><div class="form-hint">' + esc(p.FileName) + '</div></td>' +
+                      '<td><strong>' + esc(p.OutletName) + '</strong><div class="form-hint">' + esc(p.InspectionDate) + '</div></td>' +
+                      '<td>' + esc(formatBytes(p.FileSize)) + '</td>' +
+                      '<td>' + esc(p.DeletedAt) + '</td>' +
+                      '<td>' + statusCell + '</td>' +
+                      '<td>' +
+                        (p.CanPurge
+                          ? '<button class="btn btn-sm btn-danger" data-ppurge="' + esc(p.PhotoID) + '">🗑️ Purge Permanen</button>'
+                          : '-') +
+                      '</td>' +
+                    '</tr>'
+                  );
+                }).join('');
+
+            body.innerHTML =
+              '<div class="card">' +
+                '<div class="card-header">' +
+                  '<div>' +
+                    '<h2 class="card-title">Arsip Foto &amp; Purge Manual</h2>' +
+                    '<p class="form-hint" style="margin:4px 0 0;">Foto dari temuan/sesi terhapus disimpan sebagai arsip permanen hingga di-purge manual oleh Super Admin dengan alasan wajib. Foto yang masih direferensikan oleh data aktif atau backup yang dipertahankan tidak dapat di-purge.</p>' +
+                  '</div>' +
+                '</div>' +
+                '<div class="table-wrap">' +
+                  '<table class="data-table">' +
+                    '<thead><tr><th>ID &amp; Nama File</th><th>Outlet &amp; Tanggal</th><th>Ukuran</th><th>Waktu Diarsipkan</th><th>Status Proteksi</th><th>Aksi</th></tr></thead>' +
+                    '<tbody>' + rowsHtml + '</tbody>' +
+                  '</table>' +
+                '</div>' +
+              '</div>';
+
+            body.querySelectorAll('[data-ppurge]').forEach(function (btn) {
+              btn.addEventListener('click', function () {
+                var pid = btn.getAttribute('data-ppurge');
+                window.TM_APP.promptDialog({
+                  variant: 'danger',
+                  title: 'Hapus Permanen Foto Arsip?',
+                  message: 'Foto arsip berikut akan dihapus permanen dari Google Drive.',
+                  highlight: pid,
+                  inputLabel: 'Alasan penghapusan (wajib)',
+                  placeholder: 'Contoh: Foto duplikat / sudah tidak diperlukan',
+                  requiredMessage: 'Alasan penghapusan wajib diisi.',
+                  confirmText: 'Ya, Hapus Permanen'
+                }).then(function (reason) {
+                  if (!reason) return;
+                  window.TM_API.callRpc('api_purgeArchivedPhoto', window.TM_API.getToken(), pid, reason)
+                    .then(function () {
+                      window.TM_APP.showToast('Foto arsip berhasil dihapus permanen.', 'success');
+                      renderPhotoArchiveTab(body);
+                    })
+                    .catch(function (err) {
+                      window.TM_APP.showToast(err.message, 'error');
+                    });
+                });
+              });
+            });
+          })
+          .catch(function (err) {
+            body.innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+          });
+      }
+
+      drawShell();
+    }
+
+    return {
+      renderBackupAndArchiveView: renderBackupAndArchiveView
+    };
+  })();
+</script>

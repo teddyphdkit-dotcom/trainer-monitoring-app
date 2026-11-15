@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
+  <title>Trainer Monitoring</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <?!= include('client/css/styles.css'); ?>
+</head>
+<body>
+  <div id="app-root" data-mode="<?= initialMode || '' ?>" data-reset-token="<?= initialResetToken || '' ?>">
+    <div class="auth-screen">
+      <div class="auth-card" style="text-align:center;">
+        <span class="spinner spinner-dark" style="width:28px;height:28px;"></span>
+        <p style="margin:12px 0 0;color:var(--text-secondary);">Memuat Trainer Monitoring...</p>
+      </div>
+    </div>
+  </div>
+  <div id="modal-root"></div>
+  <div id="toast-container" class="toast-container"></div>
+
+  <script>
+    (function () {
+      var el = document.getElementById('app-root');
+      window.TM_BOOT_PARAMS = {
+        mode: el ? (el.getAttribute('data-mode') || '') : '',
+        resetToken: el ? (el.getAttribute('data-reset-token') || '') : ''
+      };
+    })();
+  </script>
+  <?!= include('client/js/api.js'); ?>
+  <?!= include('client/js/idb.js'); ?>
+  <?!= include('client/js/sync.js'); ?>
+  <?!= include('client/js/photo.js'); ?>
+  <?!= include('client/js/views.auth.js'); ?>
+  <?!= include('client/js/views.admin.js'); ?>
+  <?!= include('client/js/views.master.js'); ?>
+  <?!= include('client/js/views.input.js'); ?>
+  <?!= include('client/js/views.dashboard.js'); ?>
+  <?!= include('client/js/views.drafts.js'); ?>
+  <?!= include('client/js/views.reporting.js'); ?>
+  <?!= include('client/js/views.notifications.js'); ?>
+  <?!= include('client/js/views.backup.js'); ?>
+  <?!= include('client/js/app.js'); ?>
+</body>
+</html>

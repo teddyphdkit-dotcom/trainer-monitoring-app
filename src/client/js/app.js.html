@@ -1,0 +1,673 @@
+<script>
+  window.TM_APP = (function () {
+    var state = {
+      initialized: false,
+      branding: { companyName: 'Trainer Monitoring', logoDataUrl: '' },
+      user: null,
+      route: 'home',
+      sidebarCollapsed: false,
+      drawerOpen: false,
+      activeDraftsCount: 0,
+      unreadNotifCount: 0
+    };
+
+    function escapeHtml(str) {
+      return String(str === null || str === undefined ? '' : str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function showToast(message, type) {
+      var container = document.getElementById('toast-container');
+      if (!container) return;
+      var el = document.createElement('div');
+      el.className = 'toast' + (type === 'error' ? ' toast-error' : (type === 'success' ? ' toast-success' : ''));
+      el.textContent = message;
+      container.appendChild(el);
+      setTimeout(function () {
+        if (el.parentNode) el.parentNode.removeChild(el);
+      }, 4200);
+    }
+
+    function bindPasswordToggles(rootEl) {
+      var container = rootEl || document;
+      if (!container || !container.querySelectorAll) return;
+      var inputs = container.querySelectorAll('input[type="password"]:not([data-pw-bound="1"])');
+      inputs.forEach(function (inp) {
+        inp.setAttribute('data-pw-bound', '1');
+        var parent = inp.parentNode;
+        if (!parent) return;
+
+        var wrap = document.createElement('div');
+        wrap.className = 'password-field-wrap';
+        parent.insertBefore(wrap, inp);
+        wrap.appendChild(inp);
+
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'password-toggle-btn';
+        btn.setAttribute('aria-label', 'Lihat atau sembunyikan password');
+        btn.innerHTML = '👁 Lihat';
+
+        btn.addEventListener('click', function (e) {
+          e.preventDefault();
+          var isHidden = inp.getAttribute('type') === 'password';
+          inp.setAttribute('type', isHidden ? 'text' : 'password');
+          btn.innerHTML = isHidden ? '🙈 Sembunyikan' : '👁 Lihat';
+          inp.focus();
+        });
+
+        wrap.appendChild(btn);
+      });
+    }
+
+    function openModal(title, bodyHtml) {
+      var root = document.getElementById('modal-root');
+      root.innerHTML =
+        '<div class="modal-backdrop" id="tm-modal-backdrop">' +
+          '<div class="modal-dialog" role="dialog" aria-modal="true">' +
+            '<div class="modal-header">' +
+              '<h3 class="modal-title">' + escapeHtml(title) + '</h3>' +
+              '<button type="button" class="btn btn-sm btn-ghost" id="tm-modal-close">✕</button>' +
+            '</div>' +
+            '<div>' + bodyHtml + '</div>' +
+          '</div>' +
+        '</div>';
+
+      bindPasswordToggles(root);
+
+      function close() {
+        root.innerHTML = '';
+      }
+      document.getElementById('tm-modal-close').addEventListener('click', close);
+      document.getElementById('tm-modal-backdrop').addEventListener('click', function (e) {
+        if (e.target.id === 'tm-modal-backdrop') close();
+      });
+      return close;
+    }
+
+    /* ==================== KARTU KONFIRMASI MODERN (pengganti confirm/prompt bawaan browser) ==================== */
+    var DIALOG_ICONS = {
+      danger: '🗑',
+      warning: '⚠️',
+      primary: '❔',
+      success: '✓',
+      info: 'ℹ'
+    };
+
+    function buildDialog(opts, withInput) {
+      var o = opts || {};
+      var variant = DIALOG_ICONS[o.variant] ? o.variant : 'primary';
+      var icon = o.icon || DIALOG_ICONS[variant];
+
+      var layer = document.createElement('div');
+      layer.className = 'tm-dialog-layer';
+      layer.innerHTML =
+        '<div class="tm-dialog tm-dialog-' + variant + '" role="alertdialog" aria-modal="true" aria-labelledby="tm-dialog-title">' +
+          '<div class="tm-dialog-icon" aria-hidden="true">' + escapeHtml(icon) + '</div>' +
+          '<h3 class="tm-dialog-title" id="tm-dialog-title">' + escapeHtml(o.title || 'Konfirmasi') + '</h3>' +
+          (o.message ? '<div class="tm-dialog-message">' + escapeHtml(o.message).replace(/\n/g, '<br>') + '</div>' : '') +
+          (o.highlight ? '<div class="tm-dialog-highlight">' + escapeHtml(o.highlight) + '</div>' : '') +
+          (o.note ? '<div class="tm-dialog-note">' + escapeHtml(o.note) + '</div>' : '') +
+          (withInput
+            ? '<div class="tm-dialog-field">' +
+                (o.inputLabel ? '<label class="form-label" for="tm-dialog-input">' + escapeHtml(o.inputLabel) + '</label>' : '') +
+                '<textarea id="tm-dialog-input" class="form-control tm-dialog-input" rows="3" placeholder="' + escapeHtml(o.placeholder || 'Tulis di sini...') + '">' + escapeHtml(o.defaultValue || '') + '</textarea>' +
+                '<div class="tm-dialog-error hidden" id="tm-dialog-error"></div>' +
+              '</div>'
+            : '') +
+          '<div class="tm-dialog-actions">' +
+            '<button type="button" class="btn btn-secondary tm-dialog-btn" data-act="cancel">' + escapeHtml(o.cancelText || 'Batal') + '</button>' +
+            '<button type="button" class="btn ' + (variant === 'danger' ? 'btn-danger' : 'btn-primary') + ' tm-dialog-btn" data-act="ok">' + escapeHtml(o.confirmText || 'Ya, Lanjutkan') + '</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(layer);
+      // trigger animasi masuk
+      requestAnimationFrame(function () { layer.classList.add('show'); });
+      return layer;
+    }
+
+    function closeDialog(layer) {
+      layer.classList.remove('show');
+      setTimeout(function () {
+        if (layer.parentNode) layer.parentNode.removeChild(layer);
+      }, 180);
+    }
+
+    /**
+     * Kartu konfirmasi modern. Mengembalikan Promise<boolean>.
+     * opts: { title, message, highlight, note, confirmText, cancelText, variant: 'danger'|'warning'|'primary'|'success'|'info' }
+     */
+    function confirmDialog(opts) {
+      return new Promise(function (resolve) {
+        var layer = buildDialog(opts, false);
+        var done = false;
+        function finish(val) {
+          if (done) return;
+          done = true;
+          document.removeEventListener('keydown', onKey, true);
+          closeDialog(layer);
+          resolve(val);
+        }
+        function onKey(e) {
+          if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+          else if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+        }
+        layer.querySelector('[data-act="ok"]').addEventListener('click', function () { finish(true); });
+        layer.querySelector('[data-act="cancel"]').addEventListener('click', function () { finish(false); });
+        layer.addEventListener('click', function (e) { if (e.target === layer) finish(false); });
+        document.addEventListener('keydown', onKey, true);
+        setTimeout(function () {
+          var okBtn = layer.querySelector('[data-act="ok"]');
+          if (okBtn) okBtn.focus();
+        }, 60);
+      });
+    }
+
+    /**
+     * Kartu input alasan modern. Mengembalikan Promise<string|null> (null jika dibatalkan).
+     * opts: { title, message, inputLabel, placeholder, required (default true), confirmText, variant }
+     */
+    function promptDialog(opts) {
+      var o = opts || {};
+      var required = o.required !== false;
+      return new Promise(function (resolve) {
+        var layer = buildDialog(o, true);
+        var input = layer.querySelector('#tm-dialog-input');
+        var errBox = layer.querySelector('#tm-dialog-error');
+        var done = false;
+        function finish(val) {
+          if (done) return;
+          done = true;
+          document.removeEventListener('keydown', onKey, true);
+          closeDialog(layer);
+          resolve(val);
+        }
+        function submit() {
+          var val = String(input.value || '').trim();
+          if (required && !val) {
+            errBox.textContent = o.requiredMessage || 'Kolom ini wajib diisi.';
+            errBox.classList.remove('hidden');
+            input.classList.add('is-invalid');
+            input.focus();
+            return;
+          }
+          finish(val);
+        }
+        function onKey(e) {
+          if (e.key === 'Escape') { e.preventDefault(); finish(null); }
+          else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
+        }
+        input.addEventListener('input', function () {
+          errBox.classList.add('hidden');
+          input.classList.remove('is-invalid');
+        });
+        layer.querySelector('[data-act="ok"]').addEventListener('click', submit);
+        layer.querySelector('[data-act="cancel"]').addEventListener('click', function () { finish(null); });
+        layer.addEventListener('click', function (e) { if (e.target === layer) finish(null); });
+        document.addEventListener('keydown', onKey, true);
+        setTimeout(function () { input.focus(); }, 60);
+      });
+    }
+
+    function getTimeGreeting() {
+      var hr = new Date().getHours();
+      if (hr < 11) return 'Selamat Pagi';
+      if (hr < 15) return 'Selamat Siang';
+      if (hr < 18) return 'Selamat Sore';
+      return 'Selamat Malam';
+    }
+
+    function getNavItems(role) {
+      var items = [
+        { id: 'home', icon: '🏠', label: 'Dashboard', section: 'Menu Utama' }
+      ];
+      if (role === 'TRAINER') {
+        items.push(
+          { id: 'input', icon: '📝', label: 'Input Pemeriksaan', section: 'Pemeriksaan' }
+        );
+      }
+      items.push(
+        { id: 'sessions', icon: '✅', label: 'Pemeriksaan Selesai', section: 'Pemeriksaan' },
+        { id: 'notifications', icon: '🔔', label: 'Notifikasi & Preferensi', section: 'Menu Utama', badge: state.unreadNotifCount }
+      );
+      if (role === 'SUPER_ADMIN') {
+        items.push(
+          { id: 'admin_drafts', icon: '📋', label: 'Monitoring Draft', section: 'Pemeriksaan', badge: state.activeDraftsCount },
+          { id: 'admin_master', icon: '🗂️', label: 'Master Data', section: 'Master & Outlet' },
+          { id: 'admin_outlets', icon: '🏪', label: 'Manajemen Outlet', section: 'Master & Outlet' },
+          { id: 'admin_users', icon: '👥', label: 'Pengguna', section: 'Administrasi' },
+          { id: 'admin_settings', icon: '⚙️', label: 'Pengaturan Aplikasi', section: 'Administrasi' },
+          { id: 'admin_backup', icon: '🛡️', label: 'Backup & Arsip Foto', section: 'Administrasi' },
+          { id: 'admin_audit', icon: '📜', label: 'Audit Log', section: 'Administrasi' }
+        );
+      }
+      return items;
+    }
+
+    var THEME_KEY = 'tm_ui_theme';
+
+    function getTheme() {
+      try {
+        return localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark';
+      } catch (e) {
+        return 'dark';
+      }
+    }
+
+    function applyChartThemeDefaults(isLight) {
+      if (typeof window.Chart === 'undefined' || !window.Chart.defaults) return;
+      window.Chart.defaults.color = isLight ? '#334155' : '#cbd5e1';
+      window.Chart.defaults.borderColor = isLight ? 'rgba(15, 23, 42, 0.1)' : 'rgba(255, 255, 255, 0.1)';
+    }
+
+    function applyTheme(theme) {
+      var isLight = theme === 'light';
+      document.documentElement.classList.toggle('theme-light', isLight);
+      try { localStorage.setItem(THEME_KEY, isLight ? 'light' : 'dark'); } catch (e) {}
+      applyChartThemeDefaults(isLight);
+      var btn = document.getElementById('btn-toggle-theme');
+      if (btn) {
+        btn.innerHTML = isLight ? '🌙' : '☀️';
+        btn.title = isLight ? 'Ubah ke Tema Gelap' : 'Ubah ke Tema Cerah';
+      }
+    }
+
+    function toggleTheme() {
+      var next = getTheme() === 'light' ? 'dark' : 'light';
+      applyTheme(next);
+      if (state.user && state.route === 'home') {
+        renderAppShell();
+      }
+    }
+
+    function renderHomePlaceholder(container) {
+      var role = state.user.Role;
+      container.innerHTML =
+        '<div class="card">' +
+          '<div class="card-header">' +
+            '<h2 class="card-title">Selamat Datang, ' + escapeHtml(state.user.Name) + '</h2>' +
+            '<span class="badge badge-primary">' + escapeHtml(role) + '</span>' +
+          '</div>' +
+          '<p style="margin:0 0 12px;color:var(--text-secondary);">Fondasi Phase 1 (Database 20 Sheet, Drive Privat, Authentication, RBAC, Pengaturan Aplikasi, &amp; Audit Log) telah aktif.</p>' +
+          '<div class="grid-3">' +
+            '<div class="card" style="margin:0;"><strong>Keamanan Sesi</strong><p class="form-hint">Maksimum 8 jam, idle timeout 30 menit, &amp; lockout 5× gagal login aktif di backend.</p></div>' +
+            '<div class="card" style="margin:0;"><strong>Status Sinkronisasi</strong><p class="form-hint">Koneksi saat ini: ' + (navigator.onLine ? 'Online' : 'Offline') + '. Modul IndexedDB &amp; Sync siap di Phase 6.</p></div>' +
+            '<div class="card" style="margin:0;"><strong>Zona Waktu Sistem</strong><p class="form-hint">Asia/Jakarta (WIB, UTC+7).</p></div>' +
+          '</div>' +
+        '</div>';
+    }
+
+    function renderAppShell() {
+      var root = document.getElementById('app-root');
+      var navItems = getNavItems(state.user.Role);
+      var groupedHtml = '';
+      var lastSec = '';
+      navItems.forEach(function (it) {
+        if (it.section !== lastSec) {
+          groupedHtml += '<div class="nav-section-title" data-nav-sec="' + escapeHtml(it.section) + '">' + escapeHtml(it.section) + '</div>';
+          lastSec = it.section;
+        }
+        groupedHtml +=
+          '<button class="nav-item' + (state.route === it.id ? ' active' : '') + '" data-route="' + escapeHtml(it.id) + '" data-label="' + escapeHtml(it.label.toLowerCase()) + '">' +
+            '<span style="display:inline-flex;align-items:center;gap:10px;"><span>' + (it.icon || '•') + '</span><span>' + escapeHtml(it.label) + '</span></span>' +
+            (it.badge !== undefined ? '<span class="badge badge-primary" id="nav-badge-' + escapeHtml(it.id) + '">' + it.badge + '</span>' : '') +
+          '</button>';
+      });
+
+      var logoHtml = state.branding.logoDataUrl
+        ? '<img class="sidebar-logo" src="' + escapeHtml(state.branding.logoDataUrl) + '" alt="Logo">'
+        : '<div class="auth-brand-icon" style="width:32px;height:32px;font-size:13px;border-radius:8px;">TM</div>';
+
+      var online = navigator.onLine !== false;
+      var currentItem = navItems.find(function (x) { return x.id === state.route; }) || navItems[0];
+      var userInitial = String(state.user.Name || 'U').trim().charAt(0).toUpperCase();
+
+      root.innerHTML =
+        '<div class="app-layout' + (state.sidebarCollapsed ? ' sidebar-collapsed' : '') + (state.drawerOpen ? ' drawer-open' : '') + '" id="app-layout">' +
+          '<div class="drawer-backdrop" id="drawer-backdrop"></div>' +
+          '<aside class="sidebar">' +
+            '<div class="sidebar-header">' +
+              logoHtml +
+              '<span class="sidebar-brand-text">' + escapeHtml(state.branding.companyName) + '</span>' +
+            '</div>' +
+            '<div class="sidebar-profile-card">' +
+              '<div class="sidebar-avatar">' + escapeHtml(userInitial) + '</div>' +
+              '<div style="min-width:0;flex:1;">' +
+                '<div class="sidebar-profile-name">' + escapeHtml(state.user.Name) + '</div>' +
+                '<div class="sidebar-profile-sub">@' + escapeHtml(state.user.Username) + ' • ' + escapeHtml(state.user.Role) + '</div>' +
+              '</div>' +
+            '</div>' +
+            '<div class="sidebar-search-box">' +
+              '<input type="search" id="sidebar-search-input" class="sidebar-search-input" placeholder="🔍 Cari menu...">' +
+            '</div>' +
+            '<nav class="sidebar-nav" id="sidebar-nav-list">' + groupedHtml + '</nav>' +
+            '<div class="sidebar-footer">' +
+              '<button id="btn-logout" class="btn btn-sm btn-secondary btn-block">Keluar</button>' +
+            '</div>' +
+          '</aside>' +
+          '<div class="main-container">' +
+            '<header class="top-header">' +
+              '<div class="header-left">' +
+                '<button type="button" class="icon-btn" id="btn-toggle-nav" aria-label="Toggle Menu">☰</button>' +
+                '<div>' +
+                  '<h1 class="header-title">' + escapeHtml(currentItem.label) + '</h1>' +
+                  '<div class="form-hint" style="font-size:11px;margin-top:-2px;">' + escapeHtml(getTimeGreeting() + ', ' + state.user.Name) + '</div>' +
+                '</div>' +
+              '</div>' +
+              '<div class="header-right">' +
+                '<span class="sync-pill' + (online ? '' : ' offline') + '" id="header-sync-pill">' +
+                  '<span>●</span><span class="sync-label-text">' + (online ? 'Online' : 'Offline') + '</span>' +
+                '</span>' +
+                '<button type="button" class="icon-btn" id="btn-toggle-theme" title="' + (getTheme() === 'light' ? 'Ubah ke Tema Gelap' : 'Ubah ke Tema Cerah') + '" aria-label="Ubah Tema">' +
+                  (getTheme() === 'light' ? '🌙' : '☀️') +
+                '</button>' +
+                '<button type="button" class="icon-btn" id="btn-open-notifs" title="Notifikasi">' +
+                  '🔔 <span id="notif-unread-badge" class="badge badge-danger' + (state.unreadNotifCount > 0 ? '' : ' hidden') + '" style="margin-left:4px;">' + state.unreadNotifCount + '</span>' +
+                '</button>' +
+              '</div>' +
+            '</header>' +
+            '<main class="page-content" id="page-content"></main>' +
+          '</div>' +
+        '</div>';
+
+      var searchInp = document.getElementById('sidebar-search-input');
+      if (searchInp) {
+        searchInp.addEventListener('input', function () {
+          var q = searchInp.value.trim().toLowerCase();
+          root.querySelectorAll('.nav-item[data-route]').forEach(function (btn) {
+            var lbl = btn.getAttribute('data-label') || '';
+            btn.style.display = (!q || lbl.indexOf(q) !== -1) ? '' : 'none';
+          });
+        });
+      }
+
+      document.getElementById('btn-toggle-nav').addEventListener('click', function () {
+        if (window.innerWidth <= 768) {
+          state.drawerOpen = !state.drawerOpen;
+        } else {
+          state.sidebarCollapsed = !state.sidebarCollapsed;
+        }
+        renderAppShell();
+      });
+
+      document.getElementById('drawer-backdrop').addEventListener('click', function () {
+        state.drawerOpen = false;
+        renderAppShell();
+      });
+
+      document.getElementById('btn-logout').addEventListener('click', handleLogout);
+      document.getElementById('btn-toggle-theme').addEventListener('click', toggleTheme);
+      document.getElementById('btn-open-notifs').addEventListener('click', openNotificationsModal);
+
+      root.querySelectorAll('.nav-item[data-route]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          state.route = btn.getAttribute('data-route');
+          state.drawerOpen = false;
+          renderAppShell();
+        });
+      });
+
+      var pageEl = document.getElementById('page-content');
+      if (state.route === 'input' && state.user.Role === 'TRAINER') {
+        window.TM_VIEWS_INPUT.renderInputView(pageEl);
+      } else if (state.route === 'sessions') {
+        window.TM_VIEWS_INPUT.renderCompletedSessionsView(pageEl);
+      } else if (state.route === 'notifications') {
+        window.TM_VIEWS_NOTIFICATIONS.renderNotificationCenterView(pageEl);
+      } else if (state.route === 'admin_drafts' && state.user.Role === 'SUPER_ADMIN') {
+        window.TM_VIEWS_DRAFTS.renderMonitoringDraftsView(pageEl);
+      } else if (state.route === 'admin_master' && state.user.Role === 'SUPER_ADMIN') {
+        window.TM_VIEWS_MASTER.renderMasterDataView(pageEl);
+      } else if (state.route === 'admin_outlets' && state.user.Role === 'SUPER_ADMIN') {
+        window.TM_VIEWS_MASTER.renderOutletsView(pageEl);
+      } else if (state.route === 'admin_users' && state.user.Role === 'SUPER_ADMIN') {
+        window.TM_VIEWS_ADMIN.renderUsersView(pageEl);
+      } else if (state.route === 'admin_settings' && state.user.Role === 'SUPER_ADMIN') {
+        window.TM_VIEWS_ADMIN.renderSettingsView(pageEl, function (updatedCfg) {
+          state.branding = { companyName: updatedCfg.companyName, logoDataUrl: updatedCfg.logoDataUrl };
+          renderAppShell();
+        });
+      } else if (state.route === 'admin_backup' && state.user.Role === 'SUPER_ADMIN') {
+        window.TM_VIEWS_BACKUP.renderBackupAndArchiveView(pageEl);
+      } else if (state.route === 'admin_audit' && state.user.Role === 'SUPER_ADMIN') {
+        window.TM_VIEWS_ADMIN.renderAuditView(pageEl);
+      } else {
+        window.TM_VIEWS_DASHBOARD.renderDashboardView(pageEl);
+      }
+    }
+
+    function handleLogout() {
+      var token = window.TM_API.getToken();
+      window.TM_API.setToken('');
+      state.user = null;
+      window.TM_API.callRpc('api_logout', token).catch(function () {});
+      showLoginScreen('');
+    }
+
+    function handleSessionExpired(message) {
+      state.user = null;
+      showLoginScreen(message || 'Sesi Anda telah berakhir. Silakan masuk kembali.');
+    }
+
+    function refreshHeaderCounters() {
+      var token = window.TM_API.getToken();
+      if (!token || !state.user) return;
+      window.TM_API.callRpc('api_listMyNotifications', token).then(function (res) {
+        state.unreadNotifCount = res.unreadCount || 0;
+        var b = document.getElementById('notif-unread-badge');
+        if (b) {
+          b.textContent = String(state.unreadNotifCount);
+          b.classList.toggle('hidden', state.unreadNotifCount === 0);
+        }
+      }).catch(function () {});
+
+      if (state.user.Role === 'SUPER_ADMIN') {
+        window.TM_API.callRpc('api_getActiveDraftsCount', token).then(function (res) {
+          setDraftBadgeCount(res.totalActiveDrafts || 0);
+        }).catch(function () {});
+      }
+    }
+
+    function setDraftBadgeCount(count) {
+      state.activeDraftsCount = count;
+      var el = document.getElementById('nav-badge-admin_drafts');
+      if (el) el.textContent = String(count);
+    }
+
+    function openNotificationsModal() {
+      var close = openModal('Notifikasi In-App', '<p class="form-hint">Memuat notifikasi...</p>');
+      window.TM_API.callRpc('api_listMyNotifications', window.TM_API.getToken()).then(function (res) {
+        var root = document.getElementById('modal-root');
+        if (!root) return;
+        var items = res.items || [];
+        var listHtml = items.length === 0
+          ? '<p class="form-hint">Belum ada notifikasi.</p>'
+          : items.map(function (n) {
+              return (
+                '<div class="mobile-item-card" style="margin-bottom:8px;background:' + (n.ReadAt ? 'var(--bg-surface)' : 'var(--primary-soft)') + ';">' +
+                  '<div class="mobile-item-row">' +
+                    '<strong>' + escapeHtml(n.Title) + '</strong>' +
+                    (n.ReadAt ? '<span class="badge badge-neutral">Dibaca</span>' : '<span class="badge badge-primary">Baru</span>') +
+                  '</div>' +
+                  '<div style="font-size:13px;margin-bottom:6px;">' + escapeHtml(n.Message) + '</div>' +
+                  '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+                    '<span class="form-hint">' + escapeHtml(n.CreatedAt) + '</span>' +
+                    (!n.ReadAt ? '<button class="btn btn-sm btn-secondary" data-nread="' + escapeHtml(n.NotificationID) + '">Tandai Dibaca</button>' : '') +
+                  '</div>' +
+                '</div>'
+              );
+            }).join('');
+        var bodyBox = root.querySelector('.modal-dialog > div:last-child');
+        if (bodyBox) {
+          bodyBox.innerHTML =
+            '<div style="display:flex;justify-content:flex-end;margin-bottom:8px;">' +
+              '<button type="button" class="btn btn-sm btn-primary" id="btn-goto-notif-center">⚙️ Buka Pusat Notifikasi &amp; Preferensi</button>' +
+            '</div>' +
+            '<div style="max-height:60vh;overflow-y:auto;">' + listHtml + '</div>';
+          var gotoBtn = document.getElementById('btn-goto-notif-center');
+          if (gotoBtn) {
+            gotoBtn.addEventListener('click', function () {
+              close();
+              state.route = 'notifications';
+              renderAppShell();
+            });
+          }
+          bodyBox.querySelectorAll('[data-nread]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              window.TM_API.callRpc('api_markNotificationRead', window.TM_API.getToken(), btn.getAttribute('data-nread'))
+                .then(function () {
+                  refreshHeaderCounters();
+                  close();
+                  openNotificationsModal();
+                });
+            });
+          });
+        }
+      });
+    }
+
+    function handleAuthenticated(authPayload) {
+      state.user = authPayload.user;
+      if (authPayload.mustChangePassword) {
+        window.TM_VIEWS_AUTH.renderForceChangePassword(
+          document.getElementById('app-root'),
+          state.branding,
+          state.user,
+          function (updatedUser) {
+            state.user = updatedUser;
+            state.route = 'home';
+            renderAppShell();
+            refreshHeaderCounters();
+          },
+          handleLogout
+        );
+        return;
+      }
+      state.route = 'home';
+      renderAppShell();
+      refreshHeaderCounters();
+      if (window.TM_SYNC) {
+        window.TM_SYNC.runAutoSync();
+      }
+    }
+
+    function showLoginScreen(bannerMsg) {
+      var root = document.getElementById('app-root');
+      window.TM_VIEWS_AUTH.renderLogin(
+        root,
+        state.branding,
+        bannerMsg,
+        handleAuthenticated,
+        function () {
+          window.TM_VIEWS_AUTH.renderForgotPassword(
+            root,
+            state.branding,
+            function () { showLoginScreen(''); },
+            function (tok) {
+              window.TM_VIEWS_AUTH.renderConfirmReset(root, state.branding, tok, function () { showLoginScreen(''); });
+            }
+          );
+        },
+        function (tok) {
+          window.TM_VIEWS_AUTH.renderConfirmReset(root, state.branding, tok, function () { showLoginScreen(''); });
+        }
+      );
+    }
+
+    function updateOnlineBadge() {
+      if (window.TM_SYNC) {
+        window.TM_SYNC.recalculateGlobalSyncState();
+        return;
+      }
+      var pill = document.getElementById('header-sync-pill');
+      if (!pill) return;
+      var online = navigator.onLine !== false;
+      pill.className = 'sync-pill' + (online ? '' : ' offline');
+      pill.innerHTML = '<span>●</span><span class="sync-label-text">' + (online ? 'Online' : 'Offline') + '</span>';
+    }
+
+    function init() {
+      applyTheme(getTheme());
+      window.addEventListener('online', updateOnlineBadge);
+      window.addEventListener('offline', updateOnlineBadge);
+
+      if (typeof MutationObserver !== 'undefined' && document.body) {
+        var pwObserver = new MutationObserver(function () {
+          bindPasswordToggles(document.body);
+        });
+        pwObserver.observe(document.body, { childList: true, subtree: true });
+      }
+
+      var root = document.getElementById('app-root');
+      var bootParams = window.TM_BOOT_PARAMS || {};
+
+      window.TM_API.callRpc('api_getBootstrapStatus')
+        .then(function (status) {
+          state.initialized = status.initialized;
+          state.branding = status.branding || state.branding;
+
+          if (!status.initialized) {
+            window.TM_VIEWS_AUTH.renderBootstrap(root, function () {
+              init();
+            });
+            return;
+          }
+
+          if (bootParams.mode === 'reset') {
+            window.TM_VIEWS_AUTH.renderConfirmReset(
+              root,
+              state.branding,
+              bootParams.resetToken || '',
+              function () {
+                window.TM_BOOT_PARAMS.mode = '';
+                showLoginScreen('');
+              }
+            );
+            return;
+          }
+
+          var token = window.TM_API.getToken();
+          if (token) {
+            window.TM_API.callRpc('api_validateSession', token)
+              .then(function (res) {
+                handleAuthenticated(res);
+              })
+              .catch(function (err) {
+                window.TM_API.setToken('');
+                showLoginScreen(err && err.message ? err.message : '');
+              });
+          } else {
+            showLoginScreen('');
+          }
+        })
+        .catch(function (err) {
+          root.innerHTML =
+            '<div class="auth-screen"><div class="auth-card"><div class="alert alert-error">Gagal memuat aplikasi: ' +
+            escapeHtml(err.message) +
+            '</div></div></div>';
+        });
+    }
+
+    return {
+      init: init,
+      getCurrentUser: function () { return state.user; },
+      setDraftBadgeCount: setDraftBadgeCount,
+      refreshHeaderCounters: refreshHeaderCounters,
+      escapeHtml: escapeHtml,
+      showToast: showToast,
+      openModal: openModal,
+      confirmDialog: confirmDialog,
+      promptDialog: promptDialog,
+      bindPasswordToggles: bindPasswordToggles,
+      handleSessionExpired: handleSessionExpired
+    };
+  })();
+
+  document.addEventListener('DOMContentLoaded', function () {
+    window.TM_APP.init();
+  });
+</script>

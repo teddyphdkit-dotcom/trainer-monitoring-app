@@ -1,0 +1,236 @@
+<script>
+  window.TM_VIEWS_REPORTING = (function () {
+    function esc(s) {
+      return window.TM_APP.escapeHtml(s);
+    }
+
+    function downloadBase64File(base64Data, mimeType, fileName) {
+      var byteChars = atob(base64Data);
+      var byteNumbers = new Array(byteChars.length);
+      for (var i = 0; i < byteChars.length; i++) {
+        byteNumbers[i] = byteChars.charCodeAt(i);
+      }
+      var byteArray = new Uint8Array(byteNumbers);
+      var blob = new Blob([byteArray], { type: mimeType });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 400);
+    }
+
+    function downloadTextFile(content, mimeType, fileName) {
+      var blob = new Blob([content], { type: mimeType || 'text/csv;charset=utf-8;' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 400);
+    }
+
+    /**
+     * Membuka Modal PDF Sesi (A4), Pengiriman Email Satu Penerima, & Riwayat Versi/Pengiriman (PRD Bagian 11).
+     */
+    function openSessionPdfModal(sessionId, trainerIdOfSession) {
+      var user = window.TM_APP.getCurrentUser();
+      var canSendEmail = user && (user.Role === 'SUPER_ADMIN' || (user.Role === 'TRAINER' && user.UserID === trainerIdOfSession));
+
+      window.TM_APP.openModal('PDF Sesi Pemeriksaan & Pengiriman Email', '<p class="form-hint">Memuat riwayat PDF &amp; pengiriman email...</p>');
+
+      function loadModalContent() {
+        window.TM_API.callRpc('api_getSessionPdfHistory', window.TM_API.getToken(), sessionId)
+          .then(function (hist) {
+            var root = document.getElementById('modal-root');
+            if (!root) return;
+            var bodyBox = root.querySelector('.modal-dialog > div:last-child');
+            if (!bodyBox) return;
+
+            var versionsHtml = (hist.pdfVersions || []).length === 0
+              ? '<p class="form-hint" style="margin:0;">Belum ada versi PDF yang dibuat untuk sesi ini.</p>'
+              : '<div class="table-wrap"><table class="data-table"><thead><tr><th>Versi</th><th>Waktu Generate</th><th>Penerima</th><th>Status</th></tr></thead><tbody>' +
+                hist.pdfVersions.map(function (v) {
+                  return '<tr><td><strong>v' + esc(v.VersionNumber) + '</strong></td><td>' + esc(v.GeneratedAt) + '</td><td>' + esc(v.RecipientEmail || '-') + '</td><td><span class="badge badge-neutral">' + esc(v.SendStatus) + '</span></td></tr>';
+                }).join('') +
+                '</tbody></table></div>';
+
+            var emailLogsHtml = (hist.emailLogs || []).length === 0
+              ? '<p class="form-hint" style="margin:0;">Belum ada riwayat pengiriman email.</p>'
+              : '<div class="table-wrap"><table class="data-table"><thead><tr><th>Waktu</th><th>Email Penerima</th><th>Status</th><th>Keterangan</th></tr></thead><tbody>' +
+                hist.emailLogs.map(function (e) {
+                  var bClass = e.Status === 'Berhasil' ? 'badge-success' : (e.Status === 'Gagal' ? 'badge-danger' : 'badge-warning');
+                  return '<tr><td>' + esc(e.AttemptAt) + '</td><td>' + esc(e.Recipient) + '</td><td><span class="badge ' + bClass + '">' + esc(e.Status) + '</span></td><td>' + esc(e.FailureReason || '-') + '</td></tr>';
+                }).join('') +
+                '</tbody></table></div>';
+
+            bodyBox.innerHTML =
+              '<div id="pdf-modal-alert"></div>' +
+              '<div class="card" style="background:var(--bg-app);margin-bottom:12px;">' +
+                '<div class="card-header" style="margin-bottom:6px;">' +
+                  '<strong>Unduh Laporan PDF Sesi (Format A4)</strong>' +
+                  '<button type="button" class="btn btn-sm btn-primary" id="btn-gen-session-pdf">📄 Generate &amp; Unduh PDF A4</button>' +
+                '</div>' +
+                '<div class="form-hint">Setiap pembuatan PDF menghasilkan nomor versi baru sesuai data dan pengaturan logo/perusahaan terbaru.</div>' +
+              '</div>' +
+              (canSendEmail
+                ? '<div class="card" style="margin-bottom:12px;">' +
+                    '<h4 style="margin:0 0 8px;">Kirim / Kirim Ulang PDF via Email (1 Penerima)</h4>' +
+                    '<div class="form-group">' +
+                      '<label class="form-label">Alamat Email Penerima *</label>' +
+                      '<input type="email" id="pdf-email-to" class="form-control" value="' + esc(hist.defaultRecipientEmail || '') + '" placeholder="contoh@perusahaan.id">' +
+                      '<div class="form-hint">Terisi otomatis dari email akun Trainer. Hanya mendukung 1 alamat penerima (tanpa CC).</div>' +
+                    '</div>' +
+                    '<div style="display:flex;gap:8px;justify-content:flex-end;">' +
+                      '<button type="button" class="btn btn-sm btn-secondary" id="btn-resend-pdf-email">Kirim Ulang</button>' +
+                      '<button type="button" class="btn btn-sm btn-primary" id="btn-send-pdf-email">✉️ Kirim Email PDF</button>' +
+                    '</div>' +
+                  '</div>'
+                : '') +
+              '<div style="margin-bottom:12px;"><h4 style="margin:0 0 6px;">Riwayat Pengiriman Email</h4>' + emailLogsHtml + '</div>' +
+              '<div><h4 style="margin:0 0 6px;">Riwayat Versi PDF</h4>' + versionsHtml + '</div>';
+
+            var genBtn = document.getElementById('btn-gen-session-pdf');
+            if (genBtn) {
+              genBtn.addEventListener('click', function () {
+                genBtn.disabled = true;
+                genBtn.textContent = 'Membuat PDF...';
+                window.TM_API.callRpc('api_generateSessionPdf', window.TM_API.getToken(), sessionId)
+                  .then(function (res) {
+                    downloadBase64File(res.base64Data, res.mimeType, res.fileName);
+                    window.TM_APP.showToast('PDF Sesi berhasil dibuat (' + res.fileName + ').', 'success');
+                    loadModalContent();
+                  })
+                  .catch(function (err) {
+                    window.TM_APP.showToast(err.message, 'error');
+                    genBtn.disabled = false;
+                    genBtn.textContent = '📄 Generate & Unduh PDF A4';
+                  });
+              });
+            }
+
+            function triggerSendEmail(isResend) {
+              var emailInput = document.getElementById('pdf-email-to');
+              var emailVal = emailInput ? emailInput.value : '';
+              var alertBox = document.getElementById('pdf-modal-alert');
+              if (alertBox) alertBox.innerHTML = '';
+
+              window.TM_API.callRpc('api_sendSessionPdfEmail', window.TM_API.getToken(), sessionId, emailVal, isResend)
+                .then(function (res) {
+                  if (res.status === 'Berhasil') {
+                    window.TM_APP.showToast('Email PDF berhasil dikirim ke ' + res.emailLog.Recipient, 'success');
+                  } else {
+                    window.TM_APP.showToast('Pengiriman email gagal: ' + (res.failureReason || 'Silakan coba kirim ulang.'), 'error');
+                  }
+                  loadModalContent();
+                })
+                .catch(function (err) {
+                  if (alertBox) alertBox.innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+                  else window.TM_APP.showToast(err.message, 'error');
+                });
+            }
+
+            var sendBtn = document.getElementById('btn-send-pdf-email');
+            if (sendBtn) sendBtn.addEventListener('click', function () { triggerSendEmail(false); });
+            var resendBtn = document.getElementById('btn-resend-pdf-email');
+            if (resendBtn) resendBtn.addEventListener('click', function () { triggerSendEmail(true); });
+          })
+          .catch(function (err) {
+            window.TM_APP.showToast(err.message, 'error');
+          });
+      }
+
+      loadModalContent();
+    }
+
+    /**
+     * Membuka Modal Ekspor Laporan & Data pada Dashboard (mengikuti filter aktif — PRD Bagian 11.1 & 12).
+     */
+    function openDashboardExportModal(currentFilters) {
+      var html =
+        '<p class="form-hint" style="margin-top:0;">Seluruh ekspor mengikuti filter aktif pada Dashboard dan mengecualikan Draft maupun data yang telah dihapus.</p>' +
+        '<div class="card" style="margin-bottom:12px;">' +
+          '<h4 style="margin:0 0 8px;">1. Laporan PDF (A4)</h4>' +
+          '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+            '<button type="button" class="btn btn-sm btn-primary" data-exp-pdf="SUMMARY">📄 Summary Report (PDF)</button>' +
+            '<button type="button" class="btn btn-sm btn-primary" data-exp-pdf="FULL">📑 Full Report Lengkap + Foto (PDF)</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="card" style="margin-bottom:12px;">' +
+          '<h4 style="margin:0 0 8px;">2. Ekspor Microsoft Excel (.xlsx)</h4>' +
+          '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+            '<button type="button" class="btn btn-sm btn-secondary" data-exp-data="EXCEL:SIMPLE">📊 Excel Simple (1 Tabel Gabungan)</button>' +
+            '<button type="button" class="btn btn-sm btn-secondary" data-exp-data="EXCEL:STRUCTURED">📗 Excel Structured (5 Worksheet Lengkap)</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="card" style="margin-bottom:0;">' +
+          '<h4 style="margin:0 0 8px;">3. Ekspor CSV (.csv)</h4>' +
+          '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+            '<button type="button" class="btn btn-sm btn-secondary" data-exp-data="CSV:SIMPLE">📄 CSV Simple (1 File Gabungan)</button>' +
+            '<button type="button" class="btn btn-sm btn-secondary" data-exp-data="CSV:STRUCTURED">🗂️ CSV Structured (5 File Terpisah)</button>' +
+          '</div>' +
+        '</div>';
+
+      window.TM_APP.openModal('Ekspor Laporan & Data Dashboard', html);
+      var root = document.getElementById('modal-root');
+
+      root.querySelectorAll('[data-exp-pdf]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var rType = btn.getAttribute('data-exp-pdf');
+          btn.disabled = true;
+          window.TM_API.callRpc('api_generateDashboardReportPdf', window.TM_API.getToken(), rType, currentFilters || {})
+            .then(function (res) {
+              downloadBase64File(res.base64Data, res.mimeType, res.fileName);
+              window.TM_APP.showToast('Laporan PDF ' + rType + ' berhasil diunduh.', 'success');
+              btn.disabled = false;
+            })
+            .catch(function (err) {
+              window.TM_APP.showToast(err.message, 'error');
+              btn.disabled = false;
+            });
+        });
+      });
+
+      root.querySelectorAll('[data-exp-data]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var parts = btn.getAttribute('data-exp-data').split(':');
+          var fmt = parts[0];
+          var mode = parts[1];
+          btn.disabled = true;
+          window.TM_API.callRpc('api_exportData', window.TM_API.getToken(), fmt, mode, currentFilters || {})
+            .then(function (res) {
+              if (res.format === 'EXCEL') {
+                downloadBase64File(res.base64Data, res.mimeType, res.fileName);
+                window.TM_APP.showToast('File Excel (' + res.mode + ') berhasil diunduh.', 'success');
+              } else if (res.format === 'CSV' && Array.isArray(res.files)) {
+                res.files.forEach(function (f, idx) {
+                  setTimeout(function () {
+                    downloadTextFile(f.csvContent, f.mimeType, f.fileName);
+                  }, idx * 200);
+                });
+                window.TM_APP.showToast(res.files.length + ' file CSV (' + res.mode + ') berhasil diunduh.', 'success');
+              }
+              btn.disabled = false;
+            })
+            .catch(function (err) {
+              window.TM_APP.showToast(err.message, 'error');
+              btn.disabled = false;
+            });
+        });
+      });
+    }
+
+    return {
+      openSessionPdfModal: openSessionPdfModal,
+      openDashboardExportModal: openDashboardExportModal
+    };
+  })();
+</script>

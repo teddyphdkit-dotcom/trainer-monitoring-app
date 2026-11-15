@@ -1,0 +1,166 @@
+<script>
+  window.TM_IDB = (function () {
+    var DB_NAME = 'tm_offline_db_v1';
+    var DB_VERSION = 1;
+    var STORES = ['localDrafts', 'localPhotos', 'syncQueue', 'masterCache', 'retentionNotices'];
+    var _dbPromise = null;
+    var _memFallback = {
+      localDrafts: {},
+      localPhotos: {},
+      syncQueue: {},
+      masterCache: {},
+      retentionNotices: {}
+    };
+
+    function openDb() {
+      if (_dbPromise) return _dbPromise;
+      if (typeof indexedDB === 'undefined') {
+        _dbPromise = Promise.resolve(null);
+        return _dbPromise;
+      }
+      _dbPromise = new Promise(function (resolve) {
+        try {
+          var req = indexedDB.open(DB_NAME, DB_VERSION);
+          req.onupgradeneeded = function (ev) {
+            var db = ev.target.result;
+            if (!db.objectStoreNames.contains('localDrafts')) {
+              db.createObjectStore('localDrafts', { keyPath: 'sessionId' });
+            }
+            if (!db.objectStoreNames.contains('localPhotos')) {
+              var ps = db.createObjectStore('localPhotos', { keyPath: 'localPhotoId' });
+              ps.createIndex('bySession', 'sessionId', { unique: false });
+            }
+            if (!db.objectStoreNames.contains('syncQueue')) {
+              var qs = db.createObjectStore('syncQueue', { keyPath: 'queueId' });
+              qs.createIndex('bySession', 'sessionId', { unique: false });
+            }
+            if (!db.objectStoreNames.contains('masterCache')) {
+              db.createObjectStore('masterCache', { keyPath: 'cacheKey' });
+            }
+            if (!db.objectStoreNames.contains('retentionNotices')) {
+              db.createObjectStore('retentionNotices', { keyPath: 'noticeId' });
+            }
+          };
+          req.onsuccess = function (ev) { resolve(ev.target.result); };
+          req.onerror = function () { resolve(null); };
+        } catch (e) {
+          resolve(null);
+        }
+      });
+      return _dbPromise;
+    }
+
+    function getKeyField(storeName) {
+      if (storeName === 'localDrafts') return 'sessionId';
+      if (storeName === 'localPhotos') return 'localPhotoId';
+      if (storeName === 'syncQueue') return 'queueId';
+      if (storeName === 'masterCache') return 'cacheKey';
+      return 'noticeId';
+    }
+
+    function put(storeName, value) {
+      return openDb().then(function (db) {
+        if (!db) {
+          var kf = getKeyField(storeName);
+          _memFallback[storeName][value[kf]] = JSON.parse(JSON.stringify(value));
+          return value;
+        }
+        return new Promise(function (resolve, reject) {
+          var tx = db.transaction(storeName, 'readwrite');
+          var store = tx.objectStore(storeName);
+          store.put(value);
+          tx.oncomplete = function () { resolve(value); };
+          tx.onerror = function (e) { reject(e.target.error); };
+        });
+      });
+    }
+
+    function get(storeName, key) {
+      return openDb().then(function (db) {
+        if (!db) {
+          return _memFallback[storeName][key] || null;
+        }
+        return new Promise(function (resolve, reject) {
+          var tx = db.transaction(storeName, 'readonly');
+          var req = tx.objectStore(storeName).get(key);
+          req.onsuccess = function () { resolve(req.result || null); };
+          req.onerror = function (e) { reject(e.target.error); };
+        });
+      });
+    }
+
+    function getAll(storeName) {
+      return openDb().then(function (db) {
+        if (!db) {
+          return Object.keys(_memFallback[storeName]).map(function (k) {
+            return _memFallback[storeName][k];
+          });
+        }
+        return new Promise(function (resolve, reject) {
+          var tx = db.transaction(storeName, 'readonly');
+          var req = tx.objectStore(storeName).getAll();
+          req.onsuccess = function () { resolve(req.result || []); };
+          req.onerror = function (e) { reject(e.target.error); };
+        });
+      });
+    }
+
+    function remove(storeName, key) {
+      return openDb().then(function (db) {
+        if (!db) {
+          delete _memFallback[storeName][key];
+          return true;
+        }
+        return new Promise(function (resolve, reject) {
+          var tx = db.transaction(storeName, 'readwrite');
+          tx.objectStore(storeName).delete(key);
+          tx.oncomplete = function () { resolve(true); };
+          tx.onerror = function (e) { reject(e.target.error); };
+        });
+      });
+    }
+
+    function removeSessionLocalDataOnly(sessionId) {
+      return Promise.all([
+        remove('localDrafts', sessionId),
+        getAll('localPhotos').then(function (photos) {
+          var targets = photos.filter(function (p) { return p.sessionId === sessionId; });
+          return Promise.all(targets.map(function (t) { return remove('localPhotos', t.localPhotoId); }));
+        }),
+        getAll('syncQueue').then(function (qItems) {
+          var targets = qItems.filter(function (q) { return q.sessionId === sessionId; });
+          return Promise.all(targets.map(function (t) { return remove('syncQueue', t.queueId); }));
+        })
+      ]);
+    }
+
+    function estimateStorage() {
+      if (navigator.storage && typeof navigator.storage.estimate === 'function') {
+        return navigator.storage.estimate().then(function (est) {
+          var usage = est.usage || 0;
+          var quota = est.quota || (50 * 1024 * 1024);
+          var pct = quota > 0 ? (usage / quota) * 100 : 0;
+          return {
+            supported: true,
+            usageBytes: usage,
+            quotaBytes: quota,
+            usagePercent: Number(pct.toFixed(2)),
+            nearLimit: pct >= 80
+          };
+        }).catch(function () {
+          return { supported: false, usageBytes: 0, quotaBytes: 0, usagePercent: 0, nearLimit: false };
+        });
+      }
+      return Promise.resolve({ supported: false, usageBytes: 0, quotaBytes: 0, usagePercent: 0, nearLimit: false });
+    }
+
+    return {
+      put: put,
+      get: get,
+      getAll: getAll,
+      remove: remove,
+      removeSessionLocalDataOnly: removeSessionLocalDataOnly,
+      estimateStorage: estimateStorage
+    };
+  })();
+</script>

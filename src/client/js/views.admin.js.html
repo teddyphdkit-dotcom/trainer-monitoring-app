@@ -1,0 +1,485 @@
+<script>
+  window.TM_VIEWS_ADMIN = (function () {
+    function esc(s) {
+      return window.TM_APP.escapeHtml(s);
+    }
+
+    function roleLabel(role) {
+      if (role === 'SUPER_ADMIN') return '<span class="badge badge-primary">Super Admin</span>';
+      if (role === 'TRAINER') return '<span class="badge badge-success">Trainer</span>';
+      if (role === 'MANAJEMEN') return '<span class="badge badge-neutral">Manajemen</span>';
+      return esc(role);
+    }
+
+    function isLockedNow(u) {
+      if (!u.LockedUntil) return false;
+      return new Date(u.LockedUntil).getTime() > Date.now();
+    }
+
+    /* ==================== KELOLA PENGGUNA ==================== */
+    function renderUsersView(container) {
+      container.innerHTML =
+        '<div class="card">' +
+          '<div class="card-header">' +
+            '<div>' +
+              '<h2 class="card-title">Manajemen Pengguna</h2>' +
+              '<p class="form-hint" style="margin:4px 0 0;">Akun tidak dapat dihapus permanen demi integritas riwayat pemeriksaan &amp; Audit Log.</p>' +
+            '</div>' +
+            '<button id="btn-new-user" class="btn btn-primary">+ Tambah Pengguna</button>' +
+          '</div>' +
+          '<div class="toolbar">' +
+            '<div class="toolbar-field"><input type="text" id="user-search" class="form-control" placeholder="Cari nama, username, atau email..."></div>' +
+            '<div>' +
+              '<select id="user-role-filter" class="form-control">' +
+                '<option value="">Semua Role</option>' +
+                '<option value="SUPER_ADMIN">Super Admin</option>' +
+                '<option value="TRAINER">Trainer</option>' +
+                '<option value="MANAJEMEN">Manajemen</option>' +
+              '</select>' +
+            '</div>' +
+          '</div>' +
+          '<div id="users-list-container"><p class="form-hint">Memuat daftar pengguna...</p></div>' +
+        '</div>';
+
+      var allUsers = [];
+
+      function loadUsers() {
+        window.TM_API.callRpc('api_listUsers', window.TM_API.getToken())
+          .then(function (data) {
+            allUsers = data || [];
+            drawUsers();
+          })
+          .catch(function (err) {
+            document.getElementById('users-list-container').innerHTML =
+              '<div class="alert alert-error">' + esc(err.message) + '</div>';
+          });
+      }
+
+      function drawUsers() {
+        var q = (document.getElementById('user-search').value || '').trim().toLowerCase();
+        var rf = document.getElementById('user-role-filter').value;
+        var filtered = allUsers.filter(function (u) {
+          if (rf && u.Role !== rf) return false;
+          if (q) {
+            var hay = (u.Name + ' ' + u.Username + ' ' + u.Email).toLowerCase();
+            if (hay.indexOf(q) === -1) return false;
+          }
+          return true;
+        });
+
+        var listEl = document.getElementById('users-list-container');
+        if (filtered.length === 0) {
+          listEl.innerHTML = '<p class="form-hint">Tidak ada pengguna yang sesuai filter.</p>';
+          return;
+        }
+
+        var rowsHtml = filtered.map(function (u) {
+          var locked = isLockedNow(u);
+          var statusBadge = u.Status === 'ACTIVE'
+            ? '<span class="badge badge-success">Aktif</span>'
+            : '<span class="badge badge-neutral">Nonaktif</span>';
+          var lockBadge = locked ? ' <span class="badge badge-danger">Terkunci</span>' : '';
+          return (
+            '<tr>' +
+              '<td><strong>' + esc(u.Name) + '</strong><br><span class="form-hint">@' + esc(u.Username) + '</span></td>' +
+              '<td>' + esc(u.Email) + '</td>' +
+              '<td>' + roleLabel(u.Role) + '</td>' +
+              '<td>' + statusBadge + lockBadge + '</td>' +
+              '<td>' +
+                '<div style="display:flex;gap:6px;flex-wrap:wrap;">' +
+                  '<button class="btn btn-sm btn-secondary" data-act="edit" data-id="' + esc(u.UserID) + '">Ubah</button>' +
+                  '<button class="btn btn-sm btn-secondary" data-act="resetpw" data-id="' + esc(u.UserID) + '">Reset PW</button>' +
+                  (locked ? '<button class="btn btn-sm btn-primary" data-act="unlock" data-id="' + esc(u.UserID) + '">Buka Kunci</button>' : '') +
+                  '<button class="btn btn-sm ' + (u.Status === 'ACTIVE' ? 'btn-danger' : 'btn-secondary') + '" data-act="toggle" data-id="' + esc(u.UserID) + '">' +
+                    (u.Status === 'ACTIVE' ? 'Nonaktifkan' : 'Aktifkan') +
+                  '</button>' +
+                '</div>' +
+              '</td>' +
+            '</tr>'
+          );
+        }).join('');
+
+        var cardsHtml = filtered.map(function (u) {
+          var locked = isLockedNow(u);
+          return (
+            '<div class="mobile-item-card">' +
+              '<div class="mobile-item-row">' +
+                '<div><strong>' + esc(u.Name) + '</strong><div class="form-hint">@' + esc(u.Username) + '</div></div>' +
+                '<div>' + roleLabel(u.Role) + '</div>' +
+              '</div>' +
+              '<div class="form-hint" style="margin-bottom:8px;">' + esc(u.Email) + '</div>' +
+              '<div>' +
+                (u.Status === 'ACTIVE' ? '<span class="badge badge-success">Aktif</span>' : '<span class="badge badge-neutral">Nonaktif</span>') +
+                (locked ? ' <span class="badge badge-danger">Terkunci</span>' : '') +
+              '</div>' +
+              '<div class="mobile-item-actions">' +
+                '<button class="btn btn-sm btn-secondary" data-act="edit" data-id="' + esc(u.UserID) + '">Ubah</button>' +
+                '<button class="btn btn-sm btn-secondary" data-act="resetpw" data-id="' + esc(u.UserID) + '">Reset PW</button>' +
+                (locked ? '<button class="btn btn-sm btn-primary" data-act="unlock" data-id="' + esc(u.UserID) + '">Buka Kunci</button>' : '') +
+                '<button class="btn btn-sm ' + (u.Status === 'ACTIVE' ? 'btn-danger' : 'btn-secondary') + '" data-act="toggle" data-id="' + esc(u.UserID) + '">' +
+                  (u.Status === 'ACTIVE' ? 'Nonaktifkan' : 'Aktifkan') +
+                '</button>' +
+              '</div>' +
+            '</div>'
+          );
+        }).join('');
+
+        listEl.innerHTML =
+          '<div class="table-wrap">' +
+            '<table class="data-table">' +
+              '<thead><tr><th>Nama / Username</th><th>Email</th><th>Role</th><th>Status</th><th>Aksi</th></tr></thead>' +
+              '<tbody>' + rowsHtml + '</tbody>' +
+            '</table>' +
+          '</div>' +
+          '<div class="mobile-card-list">' + cardsHtml + '</div>';
+
+        listEl.querySelectorAll('button[data-act]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var act = btn.getAttribute('data-act');
+            var uid = btn.getAttribute('data-id');
+            var target = allUsers.find(function (x) { return x.UserID === uid; });
+            if (!target) return;
+            if (act === 'edit') openUserModal(target);
+            if (act === 'resetpw') openResetPwModal(target);
+            if (act === 'unlock') handleUnlock(target);
+            if (act === 'toggle') handleToggleStatus(target);
+          });
+        });
+      }
+
+      function openUserModal(existing) {
+        var isEdit = Boolean(existing);
+        var html =
+          '<div id="um-alert"></div>' +
+          '<form id="um-form">' +
+            '<div class="form-group">' +
+              '<label class="form-label">Nama Lengkap</label>' +
+              '<input type="text" id="um-name" class="form-control" value="' + esc(isEdit ? existing.Name : '') + '" required>' +
+            '</div>' +
+            (isEdit ? '' : (
+              '<div class="form-group">' +
+                '<label class="form-label">Username</label>' +
+                '<input type="text" id="um-username" class="form-control" pattern="[a-z0-9._-]{3,32}" required>' +
+              '</div>'
+            )) +
+            '<div class="form-group">' +
+              '<label class="form-label">Email</label>' +
+              '<input type="email" id="um-email" class="form-control" value="' + esc(isEdit ? existing.Email : '') + '" required>' +
+            '</div>' +
+            '<div class="form-group">' +
+              '<label class="form-label">Role</label>' +
+              '<select id="um-role" class="form-control">' +
+                '<option value="TRAINER"' + (isEdit && existing.Role === 'TRAINER' ? ' selected' : '') + '>Trainer</option>' +
+                '<option value="MANAJEMEN"' + (isEdit && existing.Role === 'MANAJEMEN' ? ' selected' : '') + '>Manajemen</option>' +
+                '<option value="SUPER_ADMIN"' + (isEdit && existing.Role === 'SUPER_ADMIN' ? ' selected' : '') + '>Super Admin</option>' +
+              '</select>' +
+            '</div>' +
+            (isEdit ? '' : (
+              '<div class="form-group">' +
+                '<label class="form-label">Password Awal</label>' +
+                '<input type="password" id="um-password" class="form-control" minlength="8" required>' +
+                '<span class="form-hint">Pengguna wajib mengganti password ini saat login pertama.</span>' +
+              '</div>'
+            )) +
+            '<div class="modal-footer">' +
+              '<button type="button" class="btn btn-secondary" id="um-cancel">Batal</button>' +
+              '<button type="submit" class="btn btn-primary" id="um-save">Simpan</button>' +
+            '</div>' +
+          '</form>';
+
+        var close = window.TM_APP.openModal(isEdit ? 'Ubah Pengguna' : 'Tambah Pengguna Baru', html);
+        document.getElementById('um-cancel').addEventListener('click', close);
+        document.getElementById('um-form').addEventListener('submit', function (e) {
+          e.preventDefault();
+          var saveBtn = document.getElementById('um-save');
+          saveBtn.disabled = true;
+          saveBtn.textContent = 'Menyimpan...';
+
+          var req = isEdit
+            ? window.TM_API.callRpc('api_updateUser', window.TM_API.getToken(), existing.UserID, {
+                name: document.getElementById('um-name').value,
+                email: document.getElementById('um-email').value,
+                role: document.getElementById('um-role').value
+              })
+            : window.TM_API.callRpc('api_createUser', window.TM_API.getToken(), {
+                name: document.getElementById('um-name').value,
+                username: document.getElementById('um-username').value,
+                email: document.getElementById('um-email').value,
+                role: document.getElementById('um-role').value,
+                password: document.getElementById('um-password').value
+              });
+
+          req.then(function () {
+            window.TM_APP.showToast('Data pengguna disimpan.', 'success');
+            close();
+            loadUsers();
+          }).catch(function (err) {
+            document.getElementById('um-alert').innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Simpan';
+          });
+        });
+      }
+
+      function openResetPwModal(target) {
+        var html =
+          '<p>Reset password untuk <strong>' + esc(target.Name) + ' (@' + esc(target.Username) + ')</strong>. Pengguna wajib mengganti password pada login berikutnya.</p>' +
+          '<div id="arp-alert"></div>' +
+          '<form id="arp-form">' +
+            '<div class="form-group">' +
+              '<label class="form-label">Password Sementara Baru</label>' +
+              '<input type="password" id="arp-pw" class="form-control" minlength="8" required>' +
+              '<span class="form-hint">Minimal 8 karakter dengan huruf dan angka.</span>' +
+            '</div>' +
+            '<div class="modal-footer">' +
+              '<button type="button" class="btn btn-secondary" id="arp-cancel">Batal</button>' +
+              '<button type="submit" class="btn btn-primary" id="arp-save">Reset Password</button>' +
+            '</div>' +
+          '</form>';
+        var close = window.TM_APP.openModal('Reset Password Pengguna', html);
+        document.getElementById('arp-cancel').addEventListener('click', close);
+        document.getElementById('arp-form').addEventListener('submit', function (e) {
+          e.preventDefault();
+          var btn = document.getElementById('arp-save');
+          btn.disabled = true;
+          window.TM_API.callRpc('api_adminResetPassword', window.TM_API.getToken(), target.UserID, document.getElementById('arp-pw').value)
+            .then(function () {
+              window.TM_APP.showToast('Password sementara telah diterapkan.', 'success');
+              close();
+              loadUsers();
+            })
+            .catch(function (err) {
+              document.getElementById('arp-alert').innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+              btn.disabled = false;
+            });
+        });
+      }
+
+      function handleUnlock(target) {
+        window.TM_API.callRpc('api_unlockUser', window.TM_API.getToken(), target.UserID)
+          .then(function () {
+            window.TM_APP.showToast('Kunci akun dibuka.', 'success');
+            loadUsers();
+          })
+          .catch(function (err) {
+            window.TM_APP.showToast(err.message, 'error');
+          });
+      }
+
+      function handleToggleStatus(target) {
+        var nextStatus = target.Status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
+        var deactivate = nextStatus === 'INACTIVE';
+        window.TM_APP.confirmDialog({
+          variant: deactivate ? 'warning' : 'success',
+          icon: deactivate ? '🔒' : '🔓',
+          title: deactivate ? 'Nonaktifkan Akun?' : 'Aktifkan Akun?',
+          message: deactivate
+            ? 'Pengguna ini tidak akan bisa masuk ke aplikasi sampai diaktifkan kembali.'
+            : 'Pengguna ini akan dapat masuk kembali ke aplikasi.',
+          highlight: (target.Name ? target.Name + ' ' : '') + '@' + target.Username,
+          confirmText: deactivate ? 'Ya, Nonaktifkan' : 'Ya, Aktifkan'
+        }).then(function (ok) {
+          if (!ok) return;
+          window.TM_API.callRpc('api_setUserStatus', window.TM_API.getToken(), target.UserID, nextStatus)
+            .then(function () {
+              window.TM_APP.showToast('Status pengguna diperbarui.', 'success');
+              loadUsers();
+            })
+            .catch(function (err) {
+              window.TM_APP.showToast(err.message, 'error');
+            });
+        });
+      }
+
+      document.getElementById('btn-new-user').addEventListener('click', function () { openUserModal(null); });
+      document.getElementById('user-search').addEventListener('input', drawUsers);
+      document.getElementById('user-role-filter').addEventListener('change', drawUsers);
+      loadUsers();
+    }
+
+    /* ==================== PENGATURAN APLIKASI ==================== */
+    function renderSettingsView(container, onBrandingUpdated) {
+      container.innerHTML =
+        '<div class="card" style="max-width:680px;">' +
+          '<div class="card-header"><h2 class="card-title">Pengaturan Aplikasi</h2></div>' +
+          '<div id="set-alert"></div>' +
+          '<div id="set-body"><p class="form-hint">Memuat pengaturan...</p></div>' +
+        '</div>';
+
+      var pendingLogo = null;
+      var removeLogoFlag = false;
+
+      window.TM_API.callRpc('api_getAppSettings', window.TM_API.getToken())
+        .then(function (cfg) {
+          var body = document.getElementById('set-body');
+          body.innerHTML =
+            '<form id="settings-form">' +
+              '<div class="form-group">' +
+                '<label class="form-label">Nama Perusahaan (tampil di Aplikasi &amp; PDF)</label>' +
+                '<input type="text" id="set-company" class="form-control" value="' + esc(cfg.companyName) + '" required>' +
+              '</div>' +
+              '<div class="form-group">' +
+                '<label class="form-label">Batas Maksimum Draft Aktif per Trainer</label>' +
+                '<input type="number" id="set-maxdrafts" class="form-control" min="1" max="20" value="' + esc(cfg.maxActiveDrafts) + '" required>' +
+                '<span class="form-hint">Draft lama tetap dipertahankan jika batas diturunkan.</span>' +
+              '</div>' +
+              '<div class="form-group">' +
+                '<label class="form-label">Logo Perusahaan (PNG/JPG, maks 2 MB, disimpan privat di Drive)</label>' +
+                '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:6px 0;">' +
+                  '<div id="set-logo-preview" style="width:96px;height:64px;border:1px dashed var(--border-color);border-radius:8px;display:flex;align-items:center;justify-content:center;overflow:hidden;background:var(--bg-subtle);">' +
+                    (cfg.logoDataUrl ? '<img src="' + esc(cfg.logoDataUrl) + '" style="max-width:100%;max-height:100%;object-fit:contain;">' : '<span class="form-hint">Tanpa Logo</span>') +
+                  '</div>' +
+                  '<div style="display:flex;flex-direction:column;gap:8px;">' +
+                    '<input type="file" id="set-logo-file" accept="image/png,image/jpeg">' +
+                    (cfg.logoDataUrl ? '<button type="button" id="set-remove-logo" class="btn btn-sm btn-secondary">Hapus Logo Saat Ini</button>' : '') +
+                  '</div>' +
+                '</div>' +
+              '</div>' +
+              '<button type="submit" id="set-submit" class="btn btn-primary">Simpan Pengaturan</button>' +
+            '</form>';
+
+          var fileInput = document.getElementById('set-logo-file');
+          fileInput.addEventListener('change', function () {
+            var file = fileInput.files && fileInput.files[0];
+            if (!file) return;
+            if (file.size > 2 * 1024 * 1024) {
+              window.TM_APP.showToast('Ukuran logo maksimal 2 MB.', 'error');
+              fileInput.value = '';
+              return;
+            }
+            var reader = new FileReader();
+            reader.onload = function (ev) {
+              pendingLogo = { mimeType: file.type, base64Data: ev.target.result };
+              removeLogoFlag = false;
+              document.getElementById('set-logo-preview').innerHTML =
+                '<img src="' + esc(ev.target.result) + '" style="max-width:100%;max-height:100%;object-fit:contain;">';
+            };
+            reader.readAsDataURL(file);
+          });
+
+          var remBtn = document.getElementById('set-remove-logo');
+          if (remBtn) {
+            remBtn.addEventListener('click', function () {
+              pendingLogo = null;
+              removeLogoFlag = true;
+              fileInput.value = '';
+              document.getElementById('set-logo-preview').innerHTML = '<span class="form-hint">Tanpa Logo</span>';
+            });
+          }
+
+          document.getElementById('settings-form').addEventListener('submit', function (e) {
+            e.preventDefault();
+            var btn = document.getElementById('set-submit');
+            btn.disabled = true;
+            btn.textContent = 'Menyimpan...';
+            window.TM_API.callRpc('api_updateAppSettings', window.TM_API.getToken(), {
+              companyName: document.getElementById('set-company').value,
+              maxActiveDrafts: parseInt(document.getElementById('set-maxdrafts').value, 10),
+              removeLogo: removeLogoFlag
+            }, pendingLogo).then(function (updated) {
+              pendingLogo = null;
+              removeLogoFlag = false;
+              window.TM_APP.showToast('Pengaturan aplikasi berhasil disimpan.', 'success');
+              if (onBrandingUpdated) onBrandingUpdated(updated);
+            }).catch(function (err) {
+              document.getElementById('set-alert').innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+            }).finally(function () {
+              btn.disabled = false;
+              btn.textContent = 'Simpan Pengaturan';
+            });
+          });
+        })
+        .catch(function (err) {
+          document.getElementById('set-body').innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+        });
+    }
+
+    /* ==================== AUDIT LOG VIEWER ==================== */
+    function renderAuditView(container) {
+      var currentPage = 1;
+      container.innerHTML =
+        '<div class="card">' +
+          '<div class="card-header">' +
+            '<h2 class="card-title">Audit Log Sistem (Append-Only)</h2>' +
+          '</div>' +
+          '<div class="toolbar">' +
+            '<div class="toolbar-field"><input type="text" id="aud-search" class="form-control" placeholder="Cari aksi, entitas, atau keterangan..."></div>' +
+            '<div><input type="date" id="aud-from" class="form-control" title="Dari tanggal"></div>' +
+            '<div><input type="date" id="aud-to" class="form-control" title="Sampai tanggal"></div>' +
+            '<div><button id="aud-filter-btn" class="btn btn-primary">Filter</button></div>' +
+          '</div>' +
+          '<div id="aud-list"><p class="form-hint">Memuat Audit Log...</p></div>' +
+        '</div>';
+
+      function fetchLogs(page) {
+        currentPage = page || 1;
+        window.TM_API.callRpc('api_queryAuditLogs', window.TM_API.getToken(), {
+          search: document.getElementById('aud-search').value,
+          dateFrom: document.getElementById('aud-from').value,
+          dateTo: document.getElementById('aud-to').value,
+          page: currentPage,
+          pageSize: 20
+        }).then(function (res) {
+          var box = document.getElementById('aud-list');
+          if (!res.items || res.items.length === 0) {
+            box.innerHTML = '<p class="form-hint">Belum ada catatan Audit Log yang cocok.</p>';
+            return;
+          }
+          var rows = res.items.map(function (it) {
+            return (
+              '<tr>' +
+                '<td style="white-space:nowrap;">' + esc(it.Timestamp) + '</td>' +
+                '<td>' + esc(it.UserDisplay) + '</td>' +
+                '<td><span class="badge badge-primary">' + esc(it.Action) + '</span></td>' +
+                '<td>' + esc(it.EntityType) + '<br><span class="form-hint">' + esc(it.EntityID) + '</span></td>' +
+                '<td>' + esc(it.Description) + '</td>' +
+              '</tr>'
+            );
+          }).join('');
+
+          var cards = res.items.map(function (it) {
+            return (
+              '<div class="mobile-item-card">' +
+                '<div class="mobile-item-row">' +
+                  '<span class="badge badge-primary">' + esc(it.Action) + '</span>' +
+                  '<span class="form-hint">' + esc(it.Timestamp) + '</span>' +
+                '</div>' +
+                '<div style="font-weight:600;margin-bottom:4px;">' + esc(it.UserDisplay) + '</div>' +
+                '<div style="font-size:13px;margin-bottom:4px;">' + esc(it.Description) + '</div>' +
+                '<div class="form-hint">' + esc(it.EntityType) + ' • ' + esc(it.EntityID) + '</div>' +
+              '</div>'
+            );
+          }).join('');
+
+          var pager =
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;flex-wrap:wrap;gap:8px;">' +
+              '<span class="form-hint">Halaman ' + res.page + ' dari ' + res.totalPages + ' (' + res.total + ' catatan)</span>' +
+              '<div style="display:flex;gap:8px;">' +
+                '<button class="btn btn-sm btn-secondary" id="aud-prev" ' + (res.page <= 1 ? 'disabled' : '') + '>Sebelumnya</button>' +
+                '<button class="btn btn-sm btn-secondary" id="aud-next" ' + (res.page >= res.totalPages ? 'disabled' : '') + '>Berikutnya</button>' +
+              '</div>' +
+            '</div>';
+
+          box.innerHTML =
+            '<div class="table-wrap"><table class="data-table"><thead><tr><th>Waktu (WIB)</th><th>Pengguna</th><th>Aksi</th><th>Entitas</th><th>Keterangan</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+            '<div class="mobile-card-list">' + cards + '</div>' +
+            pager;
+
+          document.getElementById('aud-prev').addEventListener('click', function () { fetchLogs(currentPage - 1); });
+          document.getElementById('aud-next').addEventListener('click', function () { fetchLogs(currentPage + 1); });
+        }).catch(function (err) {
+          document.getElementById('aud-list').innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+        });
+      }
+
+      document.getElementById('aud-filter-btn').addEventListener('click', function () { fetchLogs(1); });
+      fetchLogs(1);
+    }
+
+    return {
+      renderUsersView: renderUsersView,
+      renderSettingsView: renderSettingsView,
+      renderAuditView: renderAuditView
+    };
+  })();
+</script>

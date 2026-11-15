@@ -1,0 +1,149 @@
+<script>
+  window.TM_API = (function () {
+    var TOKEN_STORAGE_KEY = 'tm_auth_token_v1';
+    var DEVICE_ID_KEY = 'tm_device_id_v1';
+    var SESSION_CHECKPOINT_KEY = 'tm_session_checkpoint_v1';
+    var AUTH_PRESERVATION_TIMEOUT_MS = 2000;
+
+    // In-memory + Storage Token State Cache mengikuti pola integration-token-file-cache.ts (Orca)
+    var tokenState = {
+      present: false,
+      token: undefined,
+      error: undefined
+    };
+
+    function readBearer(value) {
+      if (!value || typeof value !== 'string') return '';
+      var trimmed = value.trim();
+      var match = /^Bearer\s+([^\s]+)$/i.exec(trimmed);
+      return match ? match[1] : trimmed;
+    }
+
+    function getToken(force) {
+      if (tokenState.token !== undefined && force !== true) {
+        return tokenState.token;
+      }
+      try {
+        var stored = readBearer(localStorage.getItem(TOKEN_STORAGE_KEY) || '');
+        tokenState.present = Boolean(stored);
+        tokenState.token = stored;
+        tokenState.error = undefined;
+        return stored;
+      } catch (e) {
+        tokenState.error = e && e.message ? e.message : 'Storage error';
+        return tokenState.token || '';
+      }
+    }
+
+    function setToken(rawToken) {
+      var clean = readBearer(rawToken || '');
+      tokenState.present = Boolean(clean);
+      tokenState.token = clean;
+      tokenState.error = undefined;
+      try {
+        if (clean) {
+          localStorage.setItem(TOKEN_STORAGE_KEY, clean);
+        } else {
+          localStorage.removeItem(TOKEN_STORAGE_KEY);
+        }
+      } catch (e) {
+        tokenState.error = e && e.message ? e.message : 'Storage error';
+      }
+    }
+
+    function forgetToken() {
+      setToken('');
+    }
+
+    // Penjagaan sesi & checkpoint sebelum restart/unload mengikuti pola agent-auth-restart-preservation.ts (Orca)
+    function preserveAuthBeforeUnload() {
+      var startedAt = Date.now();
+      try {
+        if (tokenState.token) {
+          localStorage.setItem(TOKEN_STORAGE_KEY, tokenState.token);
+        }
+        var remaining = Math.max(0, AUTH_PRESERVATION_TIMEOUT_MS - (Date.now() - startedAt));
+        if (remaining > 0) {
+          localStorage.setItem(SESSION_CHECKPOINT_KEY, JSON.stringify({
+            savedAt: new Date().toISOString(),
+            hasToken: Boolean(tokenState.token)
+          }));
+        }
+      } catch (e) {
+        // Jangan blokir proses unload
+      }
+    }
+
+    if (typeof window !== 'undefined' && window.addEventListener) {
+      window.addEventListener('beforeunload', preserveAuthBeforeUnload);
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'hidden') {
+          preserveAuthBeforeUnload();
+        }
+      });
+    }
+
+    function getDeviceInfo() {
+      var devId = '';
+      try {
+        devId = localStorage.getItem(DEVICE_ID_KEY) || '';
+        if (!devId) {
+          devId = 'DEV-' + Math.random().toString(36).slice(2, 10).toUpperCase();
+          localStorage.setItem(DEVICE_ID_KEY, devId);
+        }
+      } catch (e) {
+        devId = 'DEV-TEMP';
+      }
+      var isMobile = /Android|Mobile/i.test(navigator.userAgent || '');
+      return devId + ' | ' + (isMobile ? 'Android/Mobile' : 'Desktop') + ' | ' + (navigator.platform || 'Web');
+    }
+
+    function callRpc(fnName) {
+      var args = Array.prototype.slice.call(arguments, 1);
+      return new Promise(function (resolve, reject) {
+        if (typeof google === 'undefined' || !google.script || !google.script.run) {
+          reject({ code: 'ERR_NO_GAS', message: 'Runtime Google Apps Script tidak tersedia.' });
+          return;
+        }
+        var runner = google.script.run
+          .withSuccessHandler(function (res) {
+            if (res && res.ok) {
+              resolve(res.data);
+            } else {
+              var err = (res && res.error) ? res.error : { code: 'ERR_UNKNOWN', message: 'Permintaan gagal.' };
+              if (
+                err.code === 'ERR_UNAUTHORIZED' ||
+                err.code === 'ERR_SESSION_EXPIRED' ||
+                err.code === 'ERR_SESSION_IDLE_TIMEOUT' ||
+                err.code === 'ERR_SESSION_REVOKED'
+              ) {
+                forgetToken();
+                if (window.TM_APP && typeof window.TM_APP.handleSessionExpired === 'function') {
+                  window.TM_APP.handleSessionExpired(err.message);
+                }
+              }
+              reject(err);
+            }
+          })
+          .withFailureHandler(function (err) {
+            reject({
+              code: 'ERR_TRANSPORT',
+              message: (err && err.message) ? err.message : 'Gagal menghubungi server.'
+            });
+          });
+
+        runner[fnName].apply(runner, args);
+      });
+    }
+
+    return {
+      getToken: getToken,
+      setToken: setToken,
+      forgetToken: forgetToken,
+      readBearer: readBearer,
+      preserveAuthBeforeUnload: preserveAuthBeforeUnload,
+      getDeviceInfo: getDeviceInfo,
+      callRpc: callRpc
+    };
+  })();
+</script>

@@ -1,0 +1,348 @@
+<script>
+  window.TM_VIEWS_AUTH = (function () {
+    function esc(s) {
+      return window.TM_APP.escapeHtml(s);
+    }
+
+    function renderBranding(branding) {
+      var logoHtml = branding && branding.logoDataUrl
+        ? '<img src="' + esc(branding.logoDataUrl) + '" alt="Logo Perusahaan">'
+        : '<div class="auth-brand-icon">TM</div>';
+      var company = (branding && branding.companyName) ? branding.companyName : 'Trainer Monitoring';
+      return (
+        '<div class="auth-brand">' +
+          logoHtml +
+          '<h1 class="auth-title">' + esc(company) + '</h1>' +
+          '<p class="auth-subtitle">Sistem Pemeriksaan & Monitoring Operasional Outlet</p>' +
+        '</div>'
+      );
+    }
+
+    function renderBootstrap(container, onSuccess) {
+      container.innerHTML =
+        '<div class="auth-screen">' +
+          '<div class="auth-card">' +
+            '<div class="auth-brand">' +
+              '<div class="auth-brand-icon">TM</div>' +
+              '<h1 class="auth-title">Setup Awal Aplikasi</h1>' +
+              '<p class="auth-subtitle">Buat database Google Sheets, folder Drive privat, &amp; akun Super Admin pertama (satu kali).</p>' +
+            '</div>' +
+            '<div id="bs-alert"></div>' +
+            '<form id="bootstrap-form">' +
+              '<div class="form-group">' +
+                '<label class="form-label">Nama Perusahaan / Organisasi</label>' +
+                '<input type="text" id="bs-company" class="form-control" placeholder="Contoh: PT Operasional Nusantara" required>' +
+              '</div>' +
+              '<div class="form-group">' +
+                '<label class="form-label">Nama Lengkap Super Admin</label>' +
+                '<input type="text" id="bs-name" class="form-control" placeholder="Nama lengkap" required>' +
+              '</div>' +
+              '<div class="form-group">' +
+                '<label class="form-label">Username Super Admin</label>' +
+                '<input type="text" id="bs-username" class="form-control" placeholder="superadmin" pattern="[a-z0-9._-]{3,32}" required>' +
+                '<span class="form-hint">3–32 karakter huruf kecil, angka, titik, garis bawah, atau tanda hubung.</span>' +
+              '</div>' +
+              '<div class="form-group">' +
+                '<label class="form-label">Email Super Admin</label>' +
+                '<input type="email" id="bs-email" class="form-control" placeholder="admin@perusahaan.com" required>' +
+              '</div>' +
+              '<div class="form-group">' +
+                '<label class="form-label">Password Super Admin</label>' +
+                '<input type="password" id="bs-password" class="form-control" minlength="8" required>' +
+                '<span class="form-hint">Minimal 8 karakter dengan kombinasi huruf dan angka.</span>' +
+              '</div>' +
+              '<div class="form-group">' +
+                '<label class="form-label">Konfirmasi Password</label>' +
+                '<input type="password" id="bs-password-confirm" class="form-control" minlength="8" required>' +
+              '</div>' +
+              '<button type="submit" id="bs-submit" class="btn btn-primary btn-block">Inisialisasi Sistem &amp; Buat Super Admin</button>' +
+            '</form>' +
+          '</div>' +
+        '</div>';
+
+      if (window.TM_APP && window.TM_APP.bindPasswordToggles) {
+        window.TM_APP.bindPasswordToggles(container);
+      }
+
+      var form = document.getElementById('bootstrap-form');
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var alertEl = document.getElementById('bs-alert');
+        var btn = document.getElementById('bs-submit');
+        var pw = document.getElementById('bs-password').value;
+        var pw2 = document.getElementById('bs-password-confirm').value;
+
+        alertEl.innerHTML = '';
+        if (pw !== pw2) {
+          alertEl.innerHTML = '<div class="alert alert-error">Konfirmasi password tidak cocok.</div>';
+          return;
+        }
+
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Menyiapkan Database &amp; Drive...';
+
+        window.TM_API.callRpc('api_runInitialBootstrap', {
+          companyName: document.getElementById('bs-company').value,
+          name: document.getElementById('bs-name').value,
+          username: document.getElementById('bs-username').value,
+          email: document.getElementById('bs-email').value,
+          password: pw,
+          deviceInfo: window.TM_API.getDeviceInfo()
+        }).then(function (data) {
+          window.TM_APP.showToast('Bootstrap berhasil! Silakan login dengan akun Super Admin.', 'success');
+          onSuccess(data);
+        }).catch(function (err) {
+          alertEl.innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+          btn.disabled = false;
+          btn.textContent = 'Inisialisasi Sistem & Buat Super Admin';
+        });
+      });
+    }
+
+    function renderLogin(container, branding, initialError, onLoginSuccess, onShowForgot, onShowResetToken) {
+      var company = (branding && branding.companyName) ? branding.companyName : 'Trainer Monitoring';
+      container.innerHTML =
+        '<div class="auth-screen">' +
+          '<div class="auth-card auth-split-card">' +
+            '<div class="auth-form-pane">' +
+              renderBranding(branding) +
+              '<div id="login-alert">' + (initialError ? '<div class="alert alert-warning">' + esc(initialError) + '</div>' : '') + '</div>' +
+              '<form id="login-form">' +
+                '<div class="form-group">' +
+                  '<label class="form-label">Username</label>' +
+                  '<input type="text" id="login-username" class="form-control" placeholder="Masukkan username Anda" autocomplete="username" required>' +
+                '</div>' +
+                '<div class="form-group">' +
+                  '<label class="form-label">Password</label>' +
+                  '<input type="password" id="login-password" class="form-control" placeholder="••••••••" autocomplete="current-password" required>' +
+                '</div>' +
+                '<button type="submit" id="login-submit" class="btn btn-primary btn-block">Masuk ke Sistem →</button>' +
+              '</form>' +
+              '<div class="auth-links">' +
+                '<button type="button" id="btn-forgot-pw" class="link-btn">Lupa Password?</button>' +
+                '<button type="button" id="btn-enter-reset-token" class="link-btn">Punya Token Reset?</button>' +
+              '</div>' +
+            '</div>' +
+            '<div class="auth-hero-pane">' +
+              '<h2 class="auth-hero-heading">Selamat Datang</h2>' +
+              '<p class="auth-hero-desc">Masuk dengan akun <strong>' + esc(company) + '</strong> Anda untuk mengelola pemeriksaan operasional outlet, memantau temuan lapangan, dan melihat laporan performa secara langsung.</p>' +
+              '<button type="button" id="btn-hero-forgot" class="auth-glass-pill-btn">Butuh Bantuan Akses? Reset Password →</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+
+      if (window.TM_APP && window.TM_APP.bindPasswordToggles) {
+        window.TM_APP.bindPasswordToggles(container);
+      }
+
+      document.getElementById('btn-forgot-pw').addEventListener('click', onShowForgot);
+      document.getElementById('btn-hero-forgot').addEventListener('click', onShowForgot);
+      document.getElementById('btn-enter-reset-token').addEventListener('click', function () {
+        onShowResetToken('');
+      });
+
+      document.getElementById('login-form').addEventListener('submit', function (e) {
+        e.preventDefault();
+        var alertEl = document.getElementById('login-alert');
+        var btn = document.getElementById('login-submit');
+        alertEl.innerHTML = '';
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Memverifikasi...';
+
+        window.TM_API.callRpc(
+          'api_login',
+          document.getElementById('login-username').value,
+          document.getElementById('login-password').value,
+          window.TM_API.getDeviceInfo()
+        ).then(function (data) {
+          window.TM_API.setToken(data.token);
+          onLoginSuccess(data);
+        }).catch(function (err) {
+          alertEl.innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+          btn.disabled = false;
+          btn.textContent = 'Masuk';
+        });
+      });
+    }
+
+    function renderForgotPassword(container, branding, onBackToLogin, onGoReset) {
+      container.innerHTML =
+        '<div class="auth-screen">' +
+          '<div class="auth-card">' +
+            renderBranding(branding) +
+            '<h2 style="margin:0 0 8px;font-size:18px;">Reset Password via Email</h2>' +
+            '<p class="auth-subtitle" style="margin-bottom:16px;">Masukkan email akun terdaftar Anda untuk menerima tautan &amp; token reset sekali pakai.</p>' +
+            '<div id="fp-alert"></div>' +
+            '<form id="fp-form">' +
+              '<div class="form-group">' +
+                '<label class="form-label">Email Terdaftar</label>' +
+                '<input type="email" id="fp-email" class="form-control" required>' +
+              '</div>' +
+              '<button type="submit" id="fp-submit" class="btn btn-primary btn-block">Kirim Instruksi Reset</button>' +
+            '</form>' +
+            '<div class="auth-links">' +
+              '<button type="button" id="fp-back" class="link-btn">Kembali ke Login</button>' +
+              '<button type="button" id="fp-has-token" class="link-btn">Masukkan Token</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+
+      document.getElementById('fp-back').addEventListener('click', onBackToLogin);
+      document.getElementById('fp-has-token').addEventListener('click', function () {
+        onGoReset('');
+      });
+
+      document.getElementById('fp-form').addEventListener('submit', function (e) {
+        e.preventDefault();
+        var alertEl = document.getElementById('fp-alert');
+        var btn = document.getElementById('fp-submit');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Mengirim...';
+        var appUrl = window.location.href.split('?')[0];
+
+        window.TM_API.callRpc('api_requestPasswordReset', document.getElementById('fp-email').value, appUrl)
+          .then(function (data) {
+            alertEl.innerHTML = '<div class="alert alert-success">' + esc(data.message) + '</div>';
+          })
+          .catch(function (err) {
+            alertEl.innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+          })
+          .finally(function () {
+            btn.disabled = false;
+            btn.textContent = 'Kirim Instruksi Reset';
+          });
+      });
+    }
+
+    function renderConfirmReset(container, branding, prefilledToken, onBackToLogin) {
+      container.innerHTML =
+        '<div class="auth-screen">' +
+          '<div class="auth-card">' +
+            renderBranding(branding) +
+            '<h2 style="margin:0 0 8px;font-size:18px;">Atur Ulang Password</h2>' +
+            '<div id="rp-alert"></div>' +
+            '<form id="rp-form">' +
+              '<div class="form-group">' +
+                '<label class="form-label">Token Reset</label>' +
+                '<input type="text" id="rp-token" class="form-control" value="' + esc(prefilledToken || '') + '" required>' +
+              '</div>' +
+              '<div class="form-group">' +
+                '<label class="form-label">Password Baru</label>' +
+                '<input type="password" id="rp-pw" class="form-control" minlength="8" required>' +
+                '<span class="form-hint">Minimal 8 karakter dengan huruf dan angka.</span>' +
+              '</div>' +
+              '<div class="form-group">' +
+                '<label class="form-label">Konfirmasi Password Baru</label>' +
+                '<input type="password" id="rp-pw2" class="form-control" minlength="8" required>' +
+              '</div>' +
+              '<button type="submit" id="rp-submit" class="btn btn-primary btn-block">Simpan Password Baru</button>' +
+            '</form>' +
+            '<div class="auth-links">' +
+              '<button type="button" id="rp-back" class="link-btn">Kembali ke Login</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+
+      if (window.TM_APP && window.TM_APP.bindPasswordToggles) {
+        window.TM_APP.bindPasswordToggles(container);
+      }
+
+      document.getElementById('rp-back').addEventListener('click', onBackToLogin);
+      document.getElementById('rp-form').addEventListener('submit', function (e) {
+        e.preventDefault();
+        var alertEl = document.getElementById('rp-alert');
+        var pw = document.getElementById('rp-pw').value;
+        var pw2 = document.getElementById('rp-pw2').value;
+        if (pw !== pw2) {
+          alertEl.innerHTML = '<div class="alert alert-error">Konfirmasi password tidak cocok.</div>';
+          return;
+        }
+        var btn = document.getElementById('rp-submit');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Menyimpan...';
+
+        window.TM_API.callRpc('api_confirmPasswordReset', document.getElementById('rp-token').value, pw)
+          .then(function () {
+            window.TM_APP.showToast('Password berhasil direset. Silakan login.', 'success');
+            onBackToLogin();
+          })
+          .catch(function (err) {
+            alertEl.innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+            btn.disabled = false;
+            btn.textContent = 'Simpan Password Baru';
+          });
+      });
+    }
+
+    function renderForceChangePassword(container, branding, user, onComplete, onLogout) {
+      container.innerHTML =
+        '<div class="auth-screen">' +
+          '<div class="auth-card">' +
+            renderBranding(branding) +
+            '<div class="alert alert-warning">Akun <strong>' + esc(user.Username) + '</strong> direset oleh Super Admin atau baru dibuat. Anda wajib mengganti password sebelum melanjutkan.</div>' +
+            '<div id="cp-alert"></div>' +
+            '<form id="cp-form">' +
+              '<div class="form-group">' +
+                '<label class="form-label">Password Sementara / Saat Ini</label>' +
+                '<input type="password" id="cp-current" class="form-control" required>' +
+              '</div>' +
+              '<div class="form-group">' +
+                '<label class="form-label">Password Baru</label>' +
+                '<input type="password" id="cp-new" class="form-control" minlength="8" required>' +
+                '<span class="form-hint">Minimal 8 karakter dengan kombinasi huruf dan angka.</span>' +
+              '</div>' +
+              '<div class="form-group">' +
+                '<label class="form-label">Konfirmasi Password Baru</label>' +
+                '<input type="password" id="cp-confirm" class="form-control" minlength="8" required>' +
+              '</div>' +
+              '<button type="submit" id="cp-submit" class="btn btn-primary btn-block">Simpan &amp; Lanjutkan</button>' +
+            '</form>' +
+            '<div class="auth-links">' +
+              '<button type="button" id="cp-logout" class="link-btn">Keluar</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+
+      if (window.TM_APP && window.TM_APP.bindPasswordToggles) {
+        window.TM_APP.bindPasswordToggles(container);
+      }
+
+      document.getElementById('cp-logout').addEventListener('click', onLogout);
+      document.getElementById('cp-form').addEventListener('submit', function (e) {
+        e.preventDefault();
+        var alertEl = document.getElementById('cp-alert');
+        var pw = document.getElementById('cp-new').value;
+        var pw2 = document.getElementById('cp-confirm').value;
+        if (pw !== pw2) {
+          alertEl.innerHTML = '<div class="alert alert-error">Konfirmasi password tidak cocok.</div>';
+          return;
+        }
+        var btn = document.getElementById('cp-submit');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Memperbarui...';
+
+        window.TM_API.callRpc(
+          'api_changePasswordRequired',
+          window.TM_API.getToken(),
+          document.getElementById('cp-current').value,
+          pw
+        ).then(function (data) {
+          window.TM_APP.showToast('Password berhasil diperbarui.', 'success');
+          onComplete(data.user);
+        }).catch(function (err) {
+          alertEl.innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+          btn.disabled = false;
+          btn.textContent = 'Simpan & Lanjutkan';
+        });
+      });
+    }
+
+    return {
+      renderBootstrap: renderBootstrap,
+      renderLogin: renderLogin,
+      renderForgotPassword: renderForgotPassword,
+      renderConfirmReset: renderConfirmReset,
+      renderForceChangePassword: renderForceChangePassword
+    };
+  })();
+</script>

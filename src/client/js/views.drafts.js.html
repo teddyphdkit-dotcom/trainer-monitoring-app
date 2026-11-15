@@ -1,0 +1,417 @@
+<script>
+  window.TM_VIEWS_DRAFTS = (function () {
+    function esc(s) {
+      return window.TM_APP.escapeHtml(s);
+    }
+
+    function renderMonitoringDraftsView(container) {
+      var mode = 'MONITORING'; // MONITORING | RESTORE_REQUESTS
+      var trainers = [];
+      var monData = { summary: { totalActiveDrafts: 0, under3Days: 0, days3To7: 0, over7Days: 0, uniqueTrainers: 0 }, items: [] };
+      var restoreData = { menunggu: [], disetujui: [], ditolak: [] };
+
+      var filters = {
+        trainerId: '',
+        createdDateFrom: '',
+        createdDateTo: '',
+        search: ''
+      };
+
+      container.innerHTML =
+        '<div class="tabs-bar" id="dm-top-tabs">' +
+          '<button class="tab-btn active" data-dmtab="MONITORING">Monitoring Draft Aktif</button>' +
+          '<button class="tab-btn" data-dmtab="RESTORE_REQUESTS">Permintaan Pemulihan Draft</button>' +
+        '</div>' +
+        '<div id="dm-body"></div>';
+
+      document.getElementById('dm-top-tabs').querySelectorAll('.tab-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          mode = btn.getAttribute('data-dmtab');
+          document.getElementById('dm-top-tabs').querySelectorAll('.tab-btn').forEach(function (b) {
+            b.classList.toggle('active', b.getAttribute('data-dmtab') === mode);
+          });
+          if (mode === 'MONITORING') loadMonitoring();
+          else loadRestoreRequests();
+        });
+      });
+
+      function loadMonitoring() {
+        var body = document.getElementById('dm-body');
+        body.innerHTML = '<p class="form-hint">Memuat Monitoring Draft...</p>';
+
+        Promise.all([
+          window.TM_API.callRpc('api_getDashboardFilterOptions', window.TM_API.getToken()),
+          window.TM_API.callRpc('api_listMonitoringDrafts', window.TM_API.getToken(), {
+            trainerId: filters.trainerId,
+            createdDateFrom: filters.createdDateFrom,
+            createdDateTo: filters.createdDateTo
+          })
+        ]).then(function (res) {
+          trainers = (res[0] && res[0].trainers) || [];
+          monData = res[1];
+          window.TM_APP.setDraftBadgeCount(monData.summary.totalActiveDrafts);
+          drawMonitoringShell();
+        }).catch(function (err) {
+          body.innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+        });
+      }
+
+      function drawMonitoringShell() {
+        var body = document.getElementById('dm-body');
+        var s = monData.summary;
+        var trainerOpts = '<option value="">Semua Trainer</option>' + trainers.map(function (t) {
+          return '<option value="' + esc(t.id) + '"' + (filters.trainerId === t.id ? ' selected' : '') + '>' + esc(t.name) + '</option>';
+        }).join('');
+
+        body.innerHTML =
+          '<div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(165px,1fr));">' +
+            '<div class="kpi-card"><span class="kpi-label">Total Draft Aktif</span><div class="kpi-value">' + s.totalActiveDrafts + '</div></div>' +
+            '<div class="kpi-card"><span class="kpi-label">Umur &lt; 3 Hari</span><div class="kpi-value">' + s.under3Days + '</div></div>' +
+            '<div class="kpi-card"><span class="kpi-label">Umur 3–7 Hari</span><div class="kpi-value">' + s.days3To7 + '</div></div>' +
+            '<div class="kpi-card' + (s.over7Days > 0 ? ' kpi-recurring-alert' : '') + '"><span class="kpi-label">Umur &gt; 7 Hari</span><div class="kpi-value">' + s.over7Days + '</div></div>' +
+            '<div class="kpi-card"><span class="kpi-label">Trainer Unik</span><div class="kpi-value">' + s.uniqueTrainers + '</div></div>' +
+          '</div>' +
+          '<div class="card">' +
+            '<div class="toolbar">' +
+              '<div class="toolbar-field"><input type="text" id="dm-search" class="form-control" placeholder="Cari langsung nama Trainer atau Outlet..." value="' + esc(filters.search) + '"></div>' +
+              '<div><select id="dm-trainer" class="form-control">' + trainerOpts + '</select></div>' +
+              '<div><input type="date" id="dm-from" class="form-control" value="' + esc(filters.createdDateFrom) + '" title="Dari tanggal dibuat"></div>' +
+              '<div><input type="date" id="dm-to" class="form-control" value="' + esc(filters.createdDateTo) + '" title="Sampai tanggal dibuat"></div>' +
+              '<div><button type="button" id="dm-apply" class="btn btn-primary">Filter</button></div>' +
+            '</div>' +
+            '<div id="dm-list-box"></div>' +
+          '</div>';
+
+        document.getElementById('dm-search').addEventListener('input', function (e) {
+          filters.search = e.target.value;
+          drawMonitoringList();
+        });
+        document.getElementById('dm-apply').addEventListener('click', function () {
+          filters.trainerId = document.getElementById('dm-trainer').value;
+          filters.createdDateFrom = document.getElementById('dm-from').value;
+          filters.createdDateTo = document.getElementById('dm-to').value;
+          loadMonitoring();
+        });
+
+        drawMonitoringList();
+      }
+
+      function drawMonitoringList() {
+        var box = document.getElementById('dm-list-box');
+        if (!box) return;
+        var q = (filters.search || '').trim().toLowerCase();
+        var items = (monData.items || []).filter(function (it) {
+          if (!q) return true;
+          var hay = (it.TrainerName + ' ' + (it.OutletNameSnapshot || '')).toLowerCase();
+          return hay.indexOf(q) !== -1;
+        });
+
+        if (items.length === 0) {
+          box.innerHTML = '<p class="form-hint">Tidak ada Draft aktif yang sesuai kriteria.</p>';
+          return;
+        }
+
+        // Kolom PC sesuai PRD 7.5: Trainer, Outlet, Tanggal dibuat, Umur Draft, Terakhir diperbarui, Aksi
+        var rows = items.map(function (d) {
+          return (
+            '<tr>' +
+              '<td><strong>' + esc(d.TrainerName) + '</strong></td>' +
+              '<td>' + esc(d.OutletNameSnapshot || 'Outlet belum diisi') + '</td>' +
+              '<td>' + esc(String(d.CreatedAt).slice(0, 10)) + '</td>' +
+              '<td><div>' + esc(d.CreatedAt) + '</div><span class="badge badge-neutral">' + esc(d.RelativeAge) + '</span></td>' +
+              '<td>' + esc(d.UpdatedAt) + '</td>' +
+              '<td>' +
+                '<div style="display:flex;gap:6px;flex-wrap:wrap;">' +
+                  '<button class="btn btn-sm btn-secondary" data-dmact="detail" data-id="' + esc(d.SessionID) + '">Detail (Read-Only)</button>' +
+                  '<button class="btn btn-sm btn-danger" data-dmact="delete" data-id="' + esc(d.SessionID) + '">Hapus</button>' +
+                '</div>' +
+              '</td>' +
+            '</tr>'
+          );
+        }).join('');
+
+        var cards = items.map(function (d) {
+          return (
+            '<div class="mobile-item-card">' +
+              '<div class="mobile-item-row">' +
+                '<div><strong>' + esc(d.OutletNameSnapshot || 'Outlet belum diisi') + '</strong><div class="form-hint">Trainer: ' + esc(d.TrainerName) + '</div></div>' +
+                '<span class="badge badge-neutral">' + esc(d.RelativeAge) + '</span>' +
+              '</div>' +
+              '<div class="form-hint">Dibuat: ' + esc(d.CreatedAt) + '</div>' +
+              '<div class="form-hint">Diperbarui: ' + esc(d.UpdatedAt) + '</div>' +
+              '<div class="mobile-item-actions">' +
+                '<button class="btn btn-sm btn-secondary" data-dmact="detail" data-id="' + esc(d.SessionID) + '">Detail (Read-Only)</button>' +
+                '<button class="btn btn-sm btn-danger" data-dmact="delete" data-id="' + esc(d.SessionID) + '">Hapus</button>' +
+              '</div>' +
+            '</div>'
+          );
+        }).join('');
+
+        box.innerHTML =
+          '<div class="table-wrap"><table class="data-table"><thead><tr><th>Trainer</th><th>Outlet</th><th>Tanggal Dibuat</th><th>Umur Draft</th><th>Terakhir Diperbarui</th><th>Aksi</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+          '<div class="mobile-card-list">' + cards + '</div>';
+
+        box.querySelectorAll('button[data-dmact]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var id = btn.getAttribute('data-id');
+            var item = items.find(function (x) { return x.SessionID === id; });
+            if (!item) return;
+            if (btn.getAttribute('data-dmact') === 'detail') openDraftDetailModal(id);
+            if (btn.getAttribute('data-dmact') === 'delete') openAdminDeleteDraftDialog(item, null);
+          });
+        });
+      }
+
+      /* ==================== DETAIL DRAFT 3-TAB READ-ONLY (PRD 7.6) ==================== */
+      function openDraftDetailModal(sessionId) {
+        window.TM_API.callRpc('api_getMonitoringDraftDetail', window.TM_API.getToken(), sessionId)
+          .then(function (detail) {
+            var info = detail.inspectionInfo;
+            var findings = detail.findings || [];
+            var photos = detail.photos || [];
+            var activeSubTab = 'INFO';
+
+            var html =
+              '<div class="alert alert-info" style="margin-bottom:12px;">Mode <strong>Hanya Baca (Read-Only)</strong>. Super Admin tidak dapat mengubah atau melanjutkan Draft sebagai Trainer.</div>' +
+              '<div class="tabs-bar" id="dd-tabs">' +
+                '<button type="button" class="tab-btn active" data-ddtab="INFO">1. Informasi Pemeriksaan</button>' +
+                '<button type="button" class="tab-btn" data-ddtab="FINDINGS">2. Daftar Temuan (' + findings.length + ')</button>' +
+                '<button type="button" class="tab-btn" data-ddtab="PHOTOS">3. Foto Bukti (' + photos.length + ')</button>' +
+              '</div>' +
+              '<div id="dd-tab-content"></div>' +
+              '<div class="modal-footer">' +
+                (info.DeletedAt ? '' : '<button type="button" class="btn btn-danger" id="dd-btn-delete">Hapus Draft</button>') +
+              '</div>';
+
+            var closeDetail = window.TM_APP.openModal('Detail Draft: ' + info.SessionID, html);
+
+            function drawSubTab() {
+              var box = document.getElementById('dd-tab-content');
+              if (!box) return;
+              if (activeSubTab === 'INFO') {
+                box.innerHTML =
+                  '<div style="font-size:14px;display:flex;flex-direction:column;gap:6px;">' +
+                    '<div><strong>Identitas Draft:</strong> <code>' + esc(info.SessionID) + '</code></div>' +
+                    '<div><strong>Trainer:</strong> ' + esc(info.TrainerName) + ' (@' + esc(info.TrainerUsername) + ')</div>' +
+                    '<div><strong>Outlet:</strong> ' + esc(info.OutletNameSnapshot || 'Belum diisi') + '</div>' +
+                    '<div><strong>Tanggal Pemeriksaan:</strong> ' + esc(info.InspectionDate) + '</div>' +
+                    '<div><strong>AM:</strong> ' + esc(info.AM_Name_Snapshot || 'Belum dipilih') + '</div>' +
+                    '<div><strong>MUM:</strong> ' + esc(info.MUM_Name_Snapshot || 'Belum dipilih') + '</div>' +
+                    '<div><strong>PIC:</strong> ' + esc(info.PIC_Name || 'Belum diisi') + '</div>' +
+                    '<div><strong>Waktu Dibuat:</strong> ' + esc(info.CreatedAt) + '</div>' +
+                    '<div><strong>Terakhir Diperbarui:</strong> ' + esc(info.UpdatedAt) + '</div>' +
+                    '<div><strong>Umur Draft:</strong> ' + esc(info.RelativeAge) + '</div>' +
+                    '<div><strong>Status:</strong> <span class="badge badge-warning">' + esc(info.Status) + '</span></div>' +
+                  '</div>';
+              } else if (activeSubTab === 'FINDINGS') {
+                if (findings.length === 0) {
+                  box.innerHTML = '<p class="form-hint">Belum ada temuan dalam Draft ini.</p>';
+                  return;
+                }
+                box.innerHTML = findings.map(function (f, i) {
+                  return (
+                    '<div class="card" style="background:var(--bg-app);margin-bottom:10px;">' +
+                      '<div class="card-header" style="margin-bottom:6px;">' +
+                        '<strong>#' + (i + 1) + ' ' + esc(f.CategoryNameSnapshot || 'Category kosong') + ' • ' + esc(f.SectionNameSnapshot || 'Section kosong') + '</strong>' +
+                        (f.IsComplete ? '<span class="badge badge-success">Lengkap</span>' : '<span class="badge badge-warning">Belum Lengkap</span>') +
+                      '</div>' +
+                      '<div style="font-size:13px;"><strong>Masalah:</strong> ' + esc(f.Masalah || '-') + '</div>' +
+                      '<div style="font-size:13px;"><strong>Mengapa:</strong> ' + esc(f.Mengapa || '-') + '</div>' +
+                      '<div style="font-size:13px;"><strong>Solusi:</strong> ' + esc(f.Solusi || '-') + '</div>' +
+                      '<div class="form-hint">Foto terunggah: ' + f.UploadedPhotoCount + '</div>' +
+                    '</div>'
+                  );
+                }).join('');
+              } else {
+                if (photos.length === 0) {
+                  box.innerHTML = '<p class="form-hint">Belum ada foto bukti dalam Draft ini.</p>';
+                  return;
+                }
+                box.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:8px;">' + photos.map(function (ph, pIdx) {
+                  return (
+                    '<button type="button" class="btn btn-sm btn-secondary" data-ddphoto="' + pIdx + '">' +
+                      '📷 ' + esc(ph.FileName) + ' (' + esc(ph.Status) + ')' + (ph.PhotoComment ? ' — ' + esc(ph.PhotoComment) : '') +
+                    '</button>'
+                  );
+                }).join('') + '</div>';
+
+                box.querySelectorAll('[data-ddphoto]').forEach(function (b) {
+                  b.addEventListener('click', function () {
+                    window.TM_PHOTO.openLightboxGallery(photos, parseInt(b.getAttribute('data-ddphoto'), 10));
+                  });
+                });
+              }
+            }
+
+            document.getElementById('dd-tabs').querySelectorAll('.tab-btn').forEach(function (tb) {
+              tb.addEventListener('click', function () {
+                activeSubTab = tb.getAttribute('data-ddtab');
+                document.getElementById('dd-tabs').querySelectorAll('.tab-btn').forEach(function (x) {
+                  x.classList.toggle('active', x.getAttribute('data-ddtab') === activeSubTab);
+                });
+                drawSubTab();
+              });
+            });
+
+            var delBtn = document.getElementById('dd-btn-delete');
+            if (delBtn) {
+              delBtn.addEventListener('click', function () {
+                openAdminDeleteDraftDialog(info, closeDetail);
+              });
+            }
+
+            drawSubTab();
+          }).catch(function (err) {
+            window.TM_APP.showToast(err.message, 'error');
+          });
+      }
+
+      /* ==================== DIALOG HAPUS DRAFT (PRD 7.7) ==================== */
+      function openAdminDeleteDraftDialog(draftItem, prevCloseFn) {
+        if (prevCloseFn) prevCloseFn();
+        var html =
+          '<div class="alert alert-error">' +
+            '<strong>Peringatan Penghapusan Draft:</strong> Draft yang dihapus akan dikunci pada perangkat Trainer dan hanya dapat dipulihkan melalui persetujuan permintaan pemulihan.' +
+          '</div>' +
+          '<div style="font-size:13px;margin-bottom:12px;">' +
+            '<div><strong>Identitas Draft:</strong> <code>' + esc(draftItem.SessionID) + '</code></div>' +
+            '<div><strong>Trainer:</strong> ' + esc(draftItem.TrainerName) + '</div>' +
+            '<div><strong>Outlet:</strong> ' + esc(draftItem.OutletNameSnapshot || 'Outlet belum diisi') + '</div>' +
+            '<div><strong>Tanggal Pemeriksaan:</strong> ' + esc(draftItem.InspectionDate) + '</div>' +
+          '</div>' +
+          '<div id="add-alert"></div>' +
+          '<form id="add-form">' +
+            '<div class="form-group">' +
+              '<label class="form-label">Alasan Penghapusan (Wajib)</label>' +
+              '<textarea id="add-reason" class="form-control" rows="2" placeholder="Masukkan alasan penghapusan Draft..." required></textarea>' +
+            '</div>' +
+            '<div class="modal-footer">' +
+              '<button type="button" class="btn btn-secondary" id="add-cancel">Batal</button>' +
+              '<button type="submit" class="btn btn-danger" id="add-confirm">Hapus</button>' +
+            '</div>' +
+          '</form>';
+
+        var close = window.TM_APP.openModal('Hapus Draft Pemeriksaan', html);
+        document.getElementById('add-cancel').addEventListener('click', close);
+        document.getElementById('add-form').addEventListener('submit', function (e) {
+          e.preventDefault();
+          var btn = document.getElementById('add-confirm');
+          btn.disabled = true;
+          btn.textContent = 'Menghapus...';
+
+          window.TM_API.callRpc('api_adminDeleteDraft', window.TM_API.getToken(), draftItem.SessionID, document.getElementById('add-reason').value)
+            .then(function () {
+              window.TM_APP.showToast('Draft dihapus & notifikasi telah dikirim ke Trainer.', 'success');
+              close();
+              loadMonitoring();
+            })
+            .catch(function (err) {
+              document.getElementById('add-alert').innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+              btn.disabled = false;
+              btn.textContent = 'Hapus';
+            });
+        });
+      }
+
+      /* ==================== PERMINTAAN PEMULIHAN DRAFT (PRD 7.9) ==================== */
+      function loadRestoreRequests() {
+        var body = document.getElementById('dm-body');
+        body.innerHTML = '<p class="form-hint">Memuat daftar permintaan pemulihan...</p>';
+        window.TM_API.callRpc('api_listDraftRestoreRequests', window.TM_API.getToken())
+          .then(function (data) {
+            restoreData = data;
+            drawRestoreRequests();
+          })
+          .catch(function (err) {
+            body.innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+          });
+      }
+
+      function renderRequestGroup(title, badgeClass, list, isPending) {
+        var content = (!list || list.length === 0)
+          ? '<p class="form-hint" style="margin:0;">Tidak ada permintaan pada kelompok ini.</p>'
+          : list.map(function (r) {
+              return (
+                '<div class="mobile-item-card" style="margin-bottom:8px;">' +
+                  '<div class="mobile-item-row">' +
+                    '<div><strong>Draft ' + esc(r.SessionID) + ' — ' + esc(r.OutletName) + '</strong><div class="form-hint">Trainer: ' + esc(r.TrainerName) + ' • Diajukan: ' + esc(r.RequestedAt) + '</div></div>' +
+                    '<span class="badge ' + badgeClass + '">' + esc(r.Status) + '</span>' +
+                  '</div>' +
+                  '<div style="font-size:13px;"><strong>Alasan Pengajuan:</strong> ' + esc(r.RequestReason) + '</div>' +
+                  (r.ProcessedAt ? '<div class="form-hint">Diproses oleh ' + esc(r.ProcessedByName) + ' pada ' + esc(r.ProcessedAt) + ' — Alasan Keputusan: ' + esc(r.DecisionReason) + '</div>' : '') +
+                  (isPending
+                    ? '<div class="mobile-item-actions">' +
+                        '<button class="btn btn-sm btn-primary" data-rract="Disetujui" data-id="' + esc(r.RequestID) + '">Setujui Pemulihan</button>' +
+                        '<button class="btn btn-sm btn-danger" data-rract="Ditolak" data-id="' + esc(r.RequestID) + '">Tolak</button>' +
+                      '</div>'
+                    : '') +
+                '</div>'
+              );
+            }).join('');
+
+        return (
+          '<div class="card">' +
+            '<div class="card-header"><h3 class="card-title">' + esc(title) + ' (' + (list ? list.length : 0) + ')</h3></div>' +
+            content +
+          '</div>'
+        );
+      }
+
+      function drawRestoreRequests() {
+        var body = document.getElementById('dm-body');
+        body.innerHTML =
+          renderRequestGroup('1. Menunggu Keputusan (Terlama di Atas)', 'badge-warning', restoreData.menunggu, true) +
+          renderRequestGroup('2. Disetujui', 'badge-success', restoreData.disetujui, false) +
+          renderRequestGroup('3. Ditolak', 'badge-danger', restoreData.ditolak, false);
+
+        body.querySelectorAll('button[data-rract]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var reqId = btn.getAttribute('data-id');
+            var decision = btn.getAttribute('data-rract');
+            openProcessRestoreModal(reqId, decision);
+          });
+        });
+      }
+
+      function openProcessRestoreModal(requestId, decision) {
+        var html =
+          '<p>Anda akan memberikan keputusan <strong>' + esc(decision) + '</strong> untuk permintaan pemulihan <code>' + esc(requestId) + '</code>.</p>' +
+          '<div id="pr-alert"></div>' +
+          '<form id="pr-form">' +
+            '<div class="form-group">' +
+              '<label class="form-label">Alasan Keputusan (Wajib)</label>' +
+              '<textarea id="pr-reason" class="form-control" rows="2" required></textarea>' +
+            '</div>' +
+            '<div class="modal-footer">' +
+              '<button type="button" class="btn btn-secondary" id="pr-cancel">Batal</button>' +
+              '<button type="submit" class="btn ' + (decision === 'Disetujui' ? 'btn-primary' : 'btn-danger') + '" id="pr-save">' + esc(decision) + '</button>' +
+            '</div>' +
+          '</form>';
+
+        var close = window.TM_APP.openModal('Keputusan Pemulihan Draft', html);
+        document.getElementById('pr-cancel').addEventListener('click', close);
+        document.getElementById('pr-form').addEventListener('submit', function (e) {
+          e.preventDefault();
+          var btn = document.getElementById('pr-save');
+          btn.disabled = true;
+          window.TM_API.callRpc('api_processDraftRestoreRequest', window.TM_API.getToken(), requestId, decision, document.getElementById('pr-reason').value)
+            .then(function () {
+              window.TM_APP.showToast('Keputusan pemulihan berhasil disimpan.', 'success');
+              close();
+              loadRestoreRequests();
+            })
+            .catch(function (err) {
+              document.getElementById('pr-alert').innerHTML = '<div class="alert alert-error">' + esc(err.message) + '</div>';
+              btn.disabled = false;
+            });
+        });
+      }
+
+      loadMonitoring();
+    }
+
+    return {
+      renderMonitoringDraftsView: renderMonitoringDraftsView
+    };
+  })();
+</script>
