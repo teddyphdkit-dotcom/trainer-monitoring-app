@@ -98,41 +98,69 @@
       return devId + ' | ' + (isMobile ? 'Android/Mobile' : 'Desktop') + ' | ' + (navigator.platform || 'Web');
     }
 
+    function handleRpcResponse(res, resolve, reject) {
+      if (res && res.ok) {
+        resolve(res.data);
+      } else {
+        var err = (res && res.error) ? res.error : { code: 'ERR_UNKNOWN', message: 'Permintaan gagal.' };
+        if (
+          err.code === 'ERR_UNAUTHORIZED' ||
+          err.code === 'ERR_SESSION_EXPIRED' ||
+          err.code === 'ERR_SESSION_IDLE_TIMEOUT' ||
+          err.code === 'ERR_SESSION_REVOKED'
+        ) {
+          forgetToken();
+          if (window.TM_APP && typeof window.TM_APP.handleSessionExpired === 'function') {
+            window.TM_APP.handleSessionExpired(err.message);
+          }
+        }
+        reject(err);
+      }
+    }
+
     function callRpc(fnName) {
       var args = Array.prototype.slice.call(arguments, 1);
       return new Promise(function (resolve, reject) {
-        if (typeof google === 'undefined' || !google.script || !google.script.run) {
-          reject({ code: 'ERR_NO_GAS', message: 'Runtime Google Apps Script tidak tersedia.' });
+        if (typeof google !== 'undefined' && google.script && google.script.run) {
+          var runner = google.script.run
+            .withSuccessHandler(function (res) {
+              handleRpcResponse(res, resolve, reject);
+            })
+            .withFailureHandler(function (err) {
+              reject({
+                code: 'ERR_TRANSPORT',
+                message: (err && err.message) ? err.message : 'Gagal menghubungi server.'
+              });
+            });
+
+          runner[fnName].apply(runner, args);
           return;
         }
-        var runner = google.script.run
-          .withSuccessHandler(function (res) {
-            if (res && res.ok) {
-              resolve(res.data);
-            } else {
-              var err = (res && res.error) ? res.error : { code: 'ERR_UNKNOWN', message: 'Permintaan gagal.' };
-              if (
-                err.code === 'ERR_UNAUTHORIZED' ||
-                err.code === 'ERR_SESSION_EXPIRED' ||
-                err.code === 'ERR_SESSION_IDLE_TIMEOUT' ||
-                err.code === 'ERR_SESSION_REVOKED'
-              ) {
-                forgetToken();
-                if (window.TM_APP && typeof window.TM_APP.handleSessionExpired === 'function') {
-                  window.TM_APP.handleSessionExpired(err.message);
-                }
-              }
-              reject(err);
-            }
+
+        // Cloudflare Workers / Standard Web HTTP RPC Transport
+        fetch('/api/rpc', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify({
+            fn: fnName,
+            args: args
           })
-          .withFailureHandler(function (err) {
+        })
+          .then(function (httpRes) {
+            return httpRes.json();
+          })
+          .then(function (res) {
+            handleRpcResponse(res, resolve, reject);
+          })
+          .catch(function (err) {
             reject({
               code: 'ERR_TRANSPORT',
-              message: (err && err.message) ? err.message : 'Gagal menghubungi server.'
+              message: (err && err.message) ? err.message : 'Gagal menghubungi server Cloudflare.'
             });
           });
-
-        runner[fnName].apply(runner, args);
       });
     }
 

@@ -582,6 +582,137 @@ function api_purgeArchivedPhoto(token, photoId, purgeReason) {
   });
 }
 
+/* ==================== CLOUDFLARE MIGRATION & PDF/EMAIL BRIDGE ==================== */
+
+var CF_BRIDGE_KEY = 'TM_CF_BRIDGE_2026_SECURE_KEY';
+
+function jsonBridgeResponse(obj) {
+  return ContentService
+    .createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function exportFullStateForCloudflare() {
+  var propsObj = {};
+  try {
+    propsObj = PropertiesService.getScriptProperties().getProperties() || {};
+  } catch (_) {}
+
+  var sheetsData = {};
+  var sheetNames = Object.keys(TM_CONFIG.SHEETS);
+  if (propsObj[TM_CONFIG.PROP_KEYS.SPREADSHEET_ID]) {
+    for (var i = 0; i < sheetNames.length; i++) {
+      var sName = sheetNames[i];
+      try {
+        sheetsData[sName] = TM_Db.getAllRecords(sName);
+      } catch (_) {
+        sheetsData[sName] = [];
+      }
+    }
+  }
+
+  var fileMap = {};
+  function collectDriveFile(fileId, folderHint) {
+    if (!fileId || fileMap[fileId]) return;
+    try {
+      var f = DriveApp.getFileById(fileId);
+      var blob = f.getBlob();
+      fileMap[fileId] = {
+        FileID: String(fileId),
+        FolderID: String(folderHint || ''),
+        FileName: String(blob.getName() || fileId),
+        MimeType: String(blob.getContentType() || 'application/octet-stream'),
+        Base64Data: Utilities.base64Encode(blob.getBytes()),
+        Trashed: f.isTrashed() ? 1 : 0,
+        CreatedAt: TM_Utils.formatWibIso()
+      };
+    } catch (_) {}
+  }
+
+  var photos = sheetsData.Photos || [];
+  for (var p = 0; p < photos.length; p++) {
+    if (photos[p].DriveFileID && !photos[p].PurgedAt) {
+      var fHint = photos[p].Status === 'Archived'
+        ? propsObj[TM_CONFIG.PROP_KEYS.DRIVE_PHOTOS_ARCHIVE_ID]
+        : propsObj[TM_CONFIG.PROP_KEYS.DRIVE_PHOTOS_ACTIVE_ID];
+      collectDriveFile(photos[p].DriveFileID, fHint);
+    }
+  }
+
+  var settings = sheetsData.AppSettings || [];
+  for (var s = 0; s < settings.length; s++) {
+    if (settings[s].SettingKey === 'COMPANY_LOGO_FILE_ID' && settings[s].SettingValue) {
+      collectDriveFile(settings[s].SettingValue, propsObj[TM_CONFIG.PROP_KEYS.DRIVE_BRANDING_ID]);
+    }
+  }
+
+  var backups = sheetsData.BackupHistory || [];
+  for (var b = 0; b < backups.length; b++) {
+    if (backups[b].StorageReference && backups[b].Status === 'Berhasil') {
+      collectDriveFile(backups[b].StorageReference, propsObj[TM_CONFIG.PROP_KEYS.DRIVE_BACKUPS_ID]);
+    }
+  }
+
+  return {
+    exportedAt: TM_Utils.formatWibIso(),
+    properties: propsObj,
+    sheets: sheetsData,
+    files: Object.keys(fileMap).map(function (k) { return fileMap[k]; })
+  };
+}
+
+function doPost(e) {
+  try {
+    var raw = (e && e.postData && e.postData.contents) ? e.postData.contents : '{}';
+    var body = JSON.parse(raw);
+    if (!body || body.bridgeKey !== CF_BRIDGE_KEY) {
+      return jsonBridgeResponse({ ok: false, error: 'Unauthorized bridge request' });
+    }
+
+    if (body.action === 'EXPORT_ALL') {
+      return jsonBridgeResponse({ ok: true, data: exportFullStateForCloudflare() });
+    }
+
+    if (body.action === 'RENDER_PDF') {
+      var out = HtmlService.createHtmlOutput(String(body.html || ''));
+      var pdfBlob = out.getAs('application/pdf').setName(String(body.fileName || 'report.pdf'));
+      return jsonBridgeResponse({
+        ok: true,
+        data: {
+          base64Data: Utilities.base64Encode(pdfBlob.getBytes()),
+          mimeType: 'application/pdf'
+        }
+      });
+    }
+
+    if (body.action === 'SEND_EMAIL') {
+      var mailOpts = {
+        to: String(body.to || ''),
+        subject: String(body.subject || ''),
+        body: String(body.body || '')
+      };
+      if (body.pdfHtml) {
+        var hOut = HtmlService.createHtmlOutput(String(body.pdfHtml));
+        var pBlob = hOut.getAs('application/pdf').setName(String(body.pdfFileName || 'report.pdf'));
+        mailOpts.attachments = [pBlob];
+      } else if (body.pdfBase64) {
+        var bytes = Utilities.base64Decode(String(body.pdfBase64));
+        var bBlob = Utilities.newBlob(bytes, 'application/pdf', String(body.pdfFileName || 'report.pdf'));
+        mailOpts.attachments = [bBlob];
+      }
+      MailApp.sendEmail(mailOpts);
+      return jsonBridgeResponse({ ok: true });
+    }
+
+    return jsonBridgeResponse({ ok: false, error: 'Unknown bridge action' });
+  } catch (err) {
+    return jsonBridgeResponse({
+      ok: false,
+      error: (err && err.message) ? err.message : String(err)
+    });
+  }
+}
+
 
 
 

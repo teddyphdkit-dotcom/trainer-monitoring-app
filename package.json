@@ -9,7 +9,11 @@
     "clasp:push": "npx clasp push",
     "clasp:pull": "npx clasp pull",
     "clasp:open": "npx clasp open",
-    "clasp:deploy": "npx clasp deploy"
+    "clasp:deploy": "npx clasp deploy",
+    "cf:build": "node scripts/build-cloudflare.js",
+    "cf:seed:gen": "node scripts/generate-d1-seed.js",
+    "cf:login": "npx wrangler login",
+    "cf:deploy": "node scripts/deploy-cloudflare.js"
   },
   "devDependencies": {
     "@google/clasp": "^2.4.2"
